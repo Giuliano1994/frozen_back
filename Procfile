@@ -1,1 +1,1 @@
-web: gunicorn frozen_back.wsgi:application --chdir frozen_back/frozen_back --bind 0.0.0.0:$PORT
+web: gunicorn frozen_back.wsgi
