@@ -57,7 +57,6 @@ def login(request):
         nombre=empleado.nombre,
         apellido=empleado.apellido,
         rol=empleado.id_rol.descripcion,
-        vectores=empleado.id_face.vector if empleado.id_face else None
     )
 
     return JsonResponse(dto.to_dict())
