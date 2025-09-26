@@ -8,5 +8,8 @@ urlpatterns = [
 
     #comprueba rol del empleado
     path('menu-rol/<str:nombreRol>/', views.menu_rol, name='menu_rol'),
+
+    #crear empleado nuevo
+    path('empleados/crear/', views.crear_empleado, name='crear_empleado'),
     
     ]
