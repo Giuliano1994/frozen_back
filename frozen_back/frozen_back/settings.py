@@ -27,6 +27,8 @@ DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
 
+# CORS settings --> despues lo vamos a cambiar para que solo acepte el que corresponde al front demomento permitimos todo
+CORS_ALLOW_ALL_ORIGINS = True
 
 # Application definition
 
