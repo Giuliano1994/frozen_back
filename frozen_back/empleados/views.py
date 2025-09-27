@@ -33,6 +33,7 @@ def menu_rol(request, nombreRol):
     return JsonResponse({"success": True, "rol": dto.to_dict()})
 
 
+@csrf_exempt
 def crear_empleado(request):
     if request.method == "POST":
         try:

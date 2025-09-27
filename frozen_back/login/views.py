@@ -8,7 +8,7 @@ from empleados.models import Empleado , Fichada
 from .dtos import LoginResponseDTO , FichajeResponseDTO
 
 
-
+@csrf_exempt
 def fichar_empleado_por_rostro(request):
     if request.method != "POST":
         return JsonResponse({"error": "Método no permitido"}, status=405)
@@ -33,7 +33,7 @@ def fichar_empleado_por_rostro(request):
 
     return JsonResponse(dto.to_dict())
 
-
+@csrf_exempt
 def login(request):
     if request.method != "POST":
         return JsonResponse({"error": "Método no permitido"}, status=405)
