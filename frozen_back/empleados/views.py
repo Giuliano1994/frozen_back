@@ -20,7 +20,7 @@ def lista_empleados(request):
         ).to_dict()
         for e in empleados
     ]
-
+ 
     return JsonResponse(data, safe=False)
 
 
