@@ -29,6 +29,7 @@ class OrdenVenta(models.Model):
 
 
 class OrdenVentaProducto(models.Model):
+    id_orden_venta_producto = models.AutoField(primary_key=True)
     id_orden_venta = models.ForeignKey(OrdenVenta, on_delete=models.CASCADE, db_column="id_orden_venta")
     id_producto = models.ForeignKey(Producto, on_delete=models.CASCADE, db_column="id_producto")
     cantidad = models.IntegerField()
