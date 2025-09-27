@@ -14,6 +14,7 @@ class Departamento(models.Model):
 class Rol(models.Model):
     id_rol = models.AutoField(primary_key=True)
     descripcion = models.CharField(max_length=100)
+    permisos = models.ManyToManyField('Permiso', through='RolPermiso', related_name='roles')
 
     class Meta:
         db_table = 'rol'

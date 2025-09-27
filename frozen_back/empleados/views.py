@@ -1,7 +1,6 @@
 import json
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
-
 from django.http import JsonResponse
 from .models import Empleado, FaceID, Rol
 from .dtos import CrearEmpleadoDTO, EmpleadoDTO , RolDTO
@@ -57,7 +56,7 @@ class FichadaViewSet(viewsets.ModelViewSet):
     queryset = Fichada.objects.all()
     serializer_class = FichadaSerializer
 
-    
+
 
 def lista_empleados(request):
     empleados = Empleado.objects.select_related("id_rol", "id_turno").all()
@@ -122,3 +121,29 @@ def crear_empleado(request):
             return JsonResponse({"error": str(e)}, status=400)
 
     return JsonResponse({"error": "Método no permitido"}, status=405)
+
+
+
+def permisos_por_rol(request, nombreRol):
+    """
+    Devuelve los permisos asignados a un rol específico.
+    """
+    rol = Rol.objects.filter(descripcion=nombreRol).first()
+    if not rol:
+        return JsonResponse({"error": "Rol no encontrado"}, status=404)
+
+    permisos = rol.permisos.all()
+    permisos_list = []
+    for p in permisos:
+        permisos_list.append({
+            "id_permiso": p.id_permiso,
+            "titulo": p.titulo,
+            "descripcion": p.descripcion,
+            "link": p.link
+        })
+
+    return JsonResponse({
+        "success": True,
+        "rol": rol.descripcion,
+        "permisos": permisos_list
+    })

@@ -17,7 +17,8 @@ urlpatterns = [
     path('empleados/', views.lista_empleados, name='lista_empleados'),
     path('empleados/crear/', views.crear_empleado, name='crear_empleado'),
     path('menu-rol/<str:nombreRol>/', views.menu_rol, name='menu_rol'),
-
+    
+    path('permisos-rol/<str:nombreRol>/', views.permisos_por_rol, name='permisos_por_rol'),
     # todos los demás CRUD por router
     path('', include(router.urls)),
 ]
