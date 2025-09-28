@@ -38,6 +38,16 @@ class RolSerializer(serializers.ModelSerializer):
 
 
 class RolPermisoSerializer(serializers.ModelSerializer):
+    rol = RolSerializer(read_only=True)
+    permiso = PermisoSerializer(read_only=True)
+
+    # estos campos aceptan los IDs en POST
+    id_rol = serializers.PrimaryKeyRelatedField(
+        queryset=Rol.objects.all(), source="rol", write_only=True
+    )
+    id_permiso = serializers.PrimaryKeyRelatedField(
+        queryset=Permiso.objects.all(), source="permiso", write_only=True
+    )
     class Meta:
         model = RolPermiso
         fields = '__all__'
