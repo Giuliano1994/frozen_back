@@ -24,6 +24,9 @@ class OrdenVenta(models.Model):
     id_cliente = models.ForeignKey(Cliente, on_delete=models.CASCADE, db_column="id_cliente")
     id_estado_venta = models.ForeignKey(EstadoVenta, on_delete=models.CASCADE, db_column="id_estado_venta")
 
+    fecha_entrega = models.DateTimeField(null=True, blank=True)
+    prioridad = models.TextField(null=True, blank=True)
+
     class Meta:
         db_table = "orden_venta"
 

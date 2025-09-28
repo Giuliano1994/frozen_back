@@ -68,6 +68,8 @@ class OrdenVentaSerializer(serializers.ModelSerializer):
         fields = [
             "id_orden_venta",
             "fecha",
+            "fecha_entrega",
+            "prioridad", 
             "cliente",
             "estado_venta",
             "productos",
