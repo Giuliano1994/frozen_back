@@ -44,8 +44,8 @@ def detalle_orden_venta(request, orden_id):
     serializer = OrdenVentaProductoSerializer(detalle, many=True)
     return Response(serializer.data)
 
-@csrf_exempt
 
+@csrf_exempt
 def crear_orden_venta(request):
     if request.method == "POST":
         try:
@@ -93,3 +93,60 @@ def crear_orden_venta(request):
             return JsonResponse({"error": str(e)}, status=400)
 
     return JsonResponse({"error": "Método no permitido"}, status=405) 
+
+
+@csrf_exempt
+def actualizar_orden_venta(request):
+    if request.method == "PUT":
+        try:
+            data = json.loads(request.body)
+
+            id_orden_venta = data.get("id_orden_venta")
+            if not id_orden_venta:
+                return JsonResponse({"error": "El campo 'id_orden_venta' es obligatorio"}, status=400)
+
+            # Buscar la orden
+            try:
+                ordenVenta = OrdenVenta.objects.get(pk=id_orden_venta)
+            except OrdenVenta.DoesNotExist:
+                return JsonResponse({"error": "Orden de venta no encontrada"}, status=404)
+
+            # Eliminar los productos actuales de la orden
+            OrdenVentaProducto.objects.filter(id_orden_venta=ordenVenta).delete()
+
+            # Insertar los nuevos productos
+            productos = data.get("productos", [])
+            for p in productos:
+                OrdenVentaProducto.objects.create(
+                    id_orden_venta=ordenVenta,
+                    id_producto_id=p["id_producto"],
+                    cantidad=p["cantidad"]
+                )
+
+            # Armar respuesta con la orden actualizada
+            orden_data = {
+                "id_orden_venta": ordenVenta.id_orden_venta,
+                "cliente": {
+                    "id": ordenVenta.id_cliente.id_cliente,
+                    "nombre": ordenVenta.id_cliente.nombre
+                },
+                "estado": {
+                    "id": ordenVenta.id_estado_venta.id_estado_venta,
+                    "descripcion": ordenVenta.id_estado_venta.descripcion
+                },
+                "productos": [
+                    {
+                        "id": op.id_producto.id_producto,
+                        "nombre": op.id_producto.nombre,
+                        "cantidad": op.cantidad
+                    }
+                    for op in OrdenVentaProducto.objects.filter(id_orden_venta=ordenVenta)
+                ]
+            }
+
+            return JsonResponse(orden_data, status=200, safe=False)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+
+    return JsonResponse({"error": "Método no permitido"}, status=405)
