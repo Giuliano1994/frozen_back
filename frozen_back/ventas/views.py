@@ -150,3 +150,39 @@ def actualizar_orden_venta(request):
             return JsonResponse({"error": str(e)}, status=400)
 
     return JsonResponse({"error": "Método no permitido"}, status=405)
+
+
+@csrf_exempt
+def listar_ordenes_venta(request):
+    if request.method == "GET":
+        try:
+            ordenes = OrdenVenta.objects.all().order_by("-fecha")
+
+            data = []
+            for orden in ordenes:
+                productos = [
+                    {
+                        "producto": op.id_producto.nombre,
+                        "tipo": op.id_producto.id_tipo_producto.descripcion if op.id_producto.id_tipo_producto else None,
+                        "unidad": op.id_producto.id_unidad.descripcion if op.id_producto.id_unidad else None,
+                        "cantidad": op.cantidad
+                    }
+                    for op in OrdenVentaProducto.objects.filter(id_orden_venta=orden)
+                ]
+
+                data.append({
+                    "id_orden_venta": orden.id_orden_venta,
+                    "fecha": orden.fecha.strftime("%Y-%m-%d %H:%M:%S") if orden.fecha else None,
+                    "fecha_entrega": orden.fecha_entrega.strftime("%Y-%m-%d %H:%M:%S") if orden.fecha_entrega else None,
+                    "prioridad": orden.prioridad,
+                    "cliente": orden.id_cliente.nombre if orden.id_cliente else None,
+                    "estado_venta": orden.id_estado_venta.descripcion if orden.id_estado_venta else None,
+                    "productos": productos
+                })
+
+            return JsonResponse(data, safe=False, status=200)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+
+    return JsonResponse({"error": "Método no permitido"}, status=405)
