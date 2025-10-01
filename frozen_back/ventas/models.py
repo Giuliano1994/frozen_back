@@ -19,7 +19,7 @@ class Cliente(models.Model):
 
 class Prioridad(models.Model):
     id_prioridad = models.AutoField(primary_key=True)
-    descripcion = models.TextField(null=True, blank=True)
+    descripcion = models.CharField(max_length=100)
 
     class Meta:
         db_table = "prioridad"

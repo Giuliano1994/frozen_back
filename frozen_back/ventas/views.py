@@ -55,8 +55,8 @@ def crear_orden_venta(request):
             ordenVenta = OrdenVenta.objects.create(
                 id_cliente_id=data.get("id_cliente"),
                 id_estado_venta_id=3,  # estado por defecto
-                id_prioridad = data.get("id_prioridad"),
-                fecha_entrega = data.get("fecha_estrega")
+                id_prioridad_id=data.get("id_prioridad"),
+                fecha_entrega = data.get("fecha_entrega")
             )
 
             productos = data.get("productos", [])
@@ -117,12 +117,12 @@ def actualizar_orden_venta(request):
             
             # Actualizar fecha_entrega y prioridad si vienen en el JSON
             fecha_entrega = data.get("fecha_entrega")
-            prioridad = data.get("prioridad")
+            prioridad = data.get("id_prioridad")
 
             if fecha_entrega:
-                ordenVenta.fecha = fecha_entrega
+                ordenVenta.fecha_entrega = fecha_entrega
             if prioridad is not None:  
-                ordenVenta.id_prioridad = prioridad  
+                ordenVenta.id_prioridad_id = prioridad  
 
             ordenVenta.save()
 
@@ -141,6 +141,8 @@ def actualizar_orden_venta(request):
             # Armar respuesta con la orden actualizada
             orden_data = {
                 "id_orden_venta": ordenVenta.id_orden_venta,
+                "prioridad": ordenVenta.id_prioridad.descripcion,
+                "fecha_entrega": ordenVenta.fecha_entrega,
                 "cliente": {
                     "id": ordenVenta.id_cliente.id_cliente,
                     "nombre": ordenVenta.id_cliente.nombre
@@ -177,7 +179,7 @@ def listar_ordenes_venta(request):
             for orden in ordenes:
                 productos = [
                     {
-                        "id_producto": op.id_producto,
+                        "id_producto": op.id_producto.id_producto,
                         "producto": op.id_producto.nombre,
                         "tipo": op.id_producto.id_tipo_producto.descripcion if op.id_producto.id_tipo_producto else None,
                         "unidad": op.id_producto.id_unidad.descripcion if op.id_producto.id_unidad else None,
@@ -190,7 +192,7 @@ def listar_ordenes_venta(request):
                     "id_orden_venta": orden.id_orden_venta,
                     "fecha": orden.fecha.strftime("%Y-%m-%d %H:%M:%S") if orden.fecha else None,
                     "fecha_entrega": orden.fecha_entrega.strftime("%Y-%m-%d %H:%M:%S") if orden.fecha_entrega else None,
-                    "prioridad": orden.prioridad,
+                    "prioridad": orden.id_prioridad.descripcion,
                     "cliente": orden.id_cliente.nombre if orden.id_cliente else None,
                     "estado_venta": orden.id_estado_venta.descripcion if orden.id_estado_venta else None,
                     "productos": productos
