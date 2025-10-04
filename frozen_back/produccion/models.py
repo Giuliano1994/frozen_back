@@ -1,5 +1,6 @@
 from django.db import models
 
+from productos.models import Producto
 from empleados.models import Empleado
 from stock.models import LoteProduccion
 
@@ -24,11 +25,29 @@ class OrdenProduccion(models.Model):
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_inicio = models.DateTimeField(blank=True, null=True)
     cantidad = models.IntegerField()
-    id_estado_orden_produccion = models.ForeignKey(EstadoOrdenProduccion, on_delete=models.CASCADE, db_column="id_estado_orden_produccion")
-    id_linea_produccion = models.ForeignKey(LineaProduccion, on_delete=models.SET_NULL, blank=True, null=True, db_column="id_linea_produccion")
-    id_supervisor = models.ForeignKey(Empleado, on_delete=models.SET_NULL, blank=True, null=True, related_name="ordenes_supervisadas", db_column="id_supervisor")
-    id_operario = models.ForeignKey(Empleado, on_delete=models.SET_NULL, blank=True, null=True, related_name="ordenes_operadas", db_column="id_operario")
-    id_lote_produccion = models.ForeignKey(LoteProduccion, on_delete=models.SET_NULL, blank=True, null=True, db_column="id_lote_produccion")
+
+    id_estado_orden_produccion = models.ForeignKey(
+        EstadoOrdenProduccion, on_delete=models.CASCADE, db_column="id_estado_orden_produccion"
+    )
+    id_linea_produccion = models.ForeignKey(
+        LineaProduccion, on_delete=models.SET_NULL, blank=True, null=True, db_column="id_linea_produccion"
+    )
+    id_supervisor = models.ForeignKey(
+        Empleado, on_delete=models.SET_NULL, blank=True, null=True,
+        related_name="ordenes_supervisadas", db_column="id_supervisor"
+    )
+    id_operario = models.ForeignKey(
+        Empleado, on_delete=models.SET_NULL, blank=True, null=True,
+        related_name="ordenes_operadas", db_column="id_operario"
+    )
+    id_lote_produccion = models.ForeignKey(
+        LoteProduccion, on_delete=models.SET_NULL, blank=True, null=True, db_column="id_lote_produccion"
+    )
+
+    id_producto = models.ForeignKey(
+        Producto, on_delete=models.CASCADE, db_column="id_producto",
+        blank=True, null=True
+    )
 
     class Meta:
         db_table = "orden_produccion"
