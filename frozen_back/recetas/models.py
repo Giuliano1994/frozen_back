@@ -1,6 +1,9 @@
 from django.db import models
 from productos.models import Producto
 from materias_primas.models import MateriaPrima
+from produccion.models import  LineaProduccion
+
+
 
 class Receta(models.Model):
     id_receta = models.AutoField(primary_key=True)
@@ -19,3 +22,13 @@ class RecetaMateriaPrima(models.Model):
 
     class Meta:
         db_table = "receta_materia_prima"
+
+class ProductoLinea(models.Model):
+    id_producto_linea = models.AutoField(primary_key=True)
+    id_producto = models.ForeignKey(Producto, on_delete=models.CASCADE, db_column="id_producto")
+    id_linea_produccion = models.ForeignKey(LineaProduccion, on_delete=models.CASCADE, db_column="id_linea_produccion")
+    cant_por_hora = models.IntegerField(blank=True, null=True)
+
+    class Meta:
+        db_table = "producto_linea"
+        unique_together = ("id_producto", "id_linea_produccion")
