@@ -1,8 +1,8 @@
 from django.shortcuts import render
-from rest_framework import viewsets
+from rest_framework import viewsets, generics
 
 from .models import TipoProducto, Unidad, Producto
-from .serializers import TipoProductoSerializer, UnidadSerializer, ProductoSerializer
+from .serializers import TipoProductoSerializer, UnidadSerializer, ProductoSerializer, ProductoLiteSerializer
 
 
 class TipoProductoViewSet(viewsets.ModelViewSet):
@@ -20,3 +20,6 @@ class ProductoViewSet(viewsets.ModelViewSet):
     serializer_class = ProductoSerializer
 
 
+class ProductoLiteListView(generics.ListAPIView):
+    queryset = Producto.objects.all()
+    serializer_class = ProductoLiteSerializer
