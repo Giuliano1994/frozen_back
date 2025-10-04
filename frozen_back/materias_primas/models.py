@@ -15,7 +15,7 @@ class MateriaPrima(models.Model):
     precio = models.DecimalField(max_digits=10, decimal_places=2)
     id_tipo_materia_prima = models.ForeignKey(TipoMateriaPrima, on_delete=models.CASCADE, db_column="id_tipo_materia_prima")
     id_unidad = models.ForeignKey(Unidad, on_delete=models.CASCADE, db_column="id_unidad")
-    umbral_minimo = models.IntegerField()
+    umbral_minimo = models.IntegerField(default=0)
 
     class Meta:
         db_table = "materia_prima"
