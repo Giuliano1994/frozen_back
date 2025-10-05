@@ -230,7 +230,7 @@ def listar_ordenes_venta(request):
 
 
 @csrf_exempt
-def crear_orden_venta(request):
+def crear_orden_venta_VERIFICAR_FUNCIONAMIENTO(request):
     print("crear_orden_venta called") 
     if request.method != "POST":
         return JsonResponse({"error": "Método no permitido"}, status=405)
@@ -282,7 +282,7 @@ def crear_orden_venta(request):
 
 
 @csrf_exempt
-def crear_orden_venta_VIEJO(request):
+def crear_orden_venta(request):
     if request.method == "POST":
         try:
             data = json.loads(request.body)
