@@ -94,6 +94,23 @@ class OrdenProduccionSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 # ------------------------------
+# Serializer para actualizar estado de OrdenProduccion
+# ------------------------------
+class OrdenProduccionUpdateEstadoSerializer(serializers.ModelSerializer):
+    id_estado_orden_produccion = serializers.PrimaryKeyRelatedField(
+        queryset=EstadoOrdenProduccion.objects.all()
+    )
+    
+    class Meta:
+        model = OrdenProduccion
+        fields = ['id_estado_orden_produccion']
+    
+    def validate_id_estado_orden_produccion(self, value):
+        if not value:
+            raise serializers.ValidationError("El estado de la orden es obligatorio.")
+        return value
+
+# ------------------------------
 # Serializer de NoConformidad
 # ------------------------------
 class NoConformidadSerializer(serializers.ModelSerializer):
