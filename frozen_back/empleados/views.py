@@ -5,7 +5,8 @@ from django.http import JsonResponse
 from .models import Empleado, FaceID, Rol
 from .dtos import CrearEmpleadoDTO, EmpleadoDTO , RolDTO
 
-from rest_framework import viewsets
+from rest_framework import viewsets, filters
+from django_filters.rest_framework import DjangoFilterBackend
 from .models import (
     Departamento, Turno, FaceID, Rol, Empleado, Fichada,
     Permiso, RolPermiso
@@ -16,6 +17,8 @@ from .serializers import (
     RolSerializer, EmpleadoSerializer, FichadaSerializer,
     PermisoSerializer, RolPermisoSerializer
 )
+
+from .filters import EmpleadoFilter
 
 class DepartamentoViewSet(viewsets.ModelViewSet):
     queryset = Departamento.objects.all()
@@ -48,8 +51,25 @@ class RolPermisoViewSet(viewsets.ModelViewSet):
 
 
 class EmpleadoViewSet(viewsets.ModelViewSet):
-    queryset = Empleado.objects.all()
+    queryset = Empleado.objects.all().select_related(
+        'id_rol', 'id_departamento', 'id_turno', 'id_face'
+    )
     serializer_class = EmpleadoSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_class = EmpleadoFilter
+    search_fields = ['nombre', 'apellido', 'usuario', 'id_rol__descripcion', 'id_departamento__descripcion', 'id_turno__descripcion']
+    ordering_fields = ['id_empleado', 'nombre', 'apellido', 'usuario']
+    ordering = ['nombre', 'apellido']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        print(f"Queryset original: {queryset.count()} empleados")
+        print(f"Parámetros de filtro: {self.request.query_params}")
+        return queryset
+    
+    def list(self, request, *args, **kwargs):
+        print(f"List endpoint llamado con params: {request.query_params}")
+        return super().list(request, *args, **kwargs)
 
 
 class FichadaViewSet(viewsets.ModelViewSet):
