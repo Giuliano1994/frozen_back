@@ -49,19 +49,23 @@ class OrdenVentaViewSet(viewsets.ModelViewSet):
 
 
 def actualizar_estado_orden(orden):
+    from stock.models import LoteProduccion
     productos_orden = OrdenVentaProducto.objects.filter(id_orden_venta=orden)
+
     if not productos_orden.exists():
         # Sin productos → estado Creada
-        print("1 - no hay productos -> estado es creada")
         estado = EstadoVenta.objects.filter(descripcion__iexact="Creada").first()
     else:
-        print("2 - si hay productos -> ver si hay stock para todos")
-        from stock.models import LoteProduccion
         hay_stock_para_todos = True
+
+        # Primero verificamos si hay stock suficiente para todos los productos
         for op in productos_orden:
             cantidad_disponible = (
                 LoteProduccion.objects
-                .filter(id_producto=op.id_producto, id_estado_lote_produccion__descripcion="Disponible")
+                .filter(
+                    id_producto=op.id_producto,
+                    id_estado_lote_produccion__descripcion="Disponible"
+                )
                 .aggregate(total=models.Sum("cantidad"))
                 .get("total") or 0
             )
@@ -70,19 +74,51 @@ def actualizar_estado_orden(orden):
                 break
 
         if hay_stock_para_todos:
-            print("3 - hay stock para todos -> estado es Pendiente de Pago")
+            # Si hay stock suficiente, se descuenta por lotes (los más próximos a vencer primero)
+            for op in productos_orden:
+                cantidad_a_descontar = op.cantidad
+                lotes = (
+                    LoteProduccion.objects
+                    .filter(
+                        id_producto=op.id_producto,
+                        id_estado_lote_produccion__descripcion="Disponible",
+                        cantidad__gt=0
+                    )
+                    .order_by("fecha_vencimiento")  # primero los que vencen antes
+                )
+
+                for lote in lotes:
+                    if cantidad_a_descontar <= 0:
+                        break
+
+                    if lote.cantidad >= cantidad_a_descontar:
+                        lote.cantidad -= cantidad_a_descontar
+                        cantidad_a_descontar = 0
+                    else:
+                        cantidad_a_descontar -= lote.cantidad
+                        lote.cantidad = 0
+
+                    # Guardamos cambios
+                    lote.save(update_fields=["cantidad"])
+
+                    # Si el lote llega a cero, cambiar su estado a Cancelado (id_estado_lote_produccion = 9)
+                    if lote.cantidad == 0:
+                        lote.id_estado_lote_produccion_id = 9
+                        lote.save(update_fields=["id_estado_lote_produccion"])
+
+            # Cambia el estado a “Pendiente de Pago”
             estado = EstadoVenta.objects.filter(descripcion__iexact="Pendiente de Pago").first()
+            if not estado:
+                estado = EstadoVenta.objects.create(descripcion="Pendiente de Pago")
         else:
-            print("4 - no hay stock para todos -> estado es En Preparacion")
+            # Si no hay stock suficiente, pasa a “En Preparación”
             estado = EstadoVenta.objects.filter(descripcion__iexact="En Preparación").first()
             if not estado:
-                
                 estado = EstadoVenta.objects.create(descripcion="En Preparación")
 
     if estado:
         orden.id_estado_venta = estado
         orden.save(update_fields=['id_estado_venta'])
-
 
 
 
@@ -290,7 +326,7 @@ def crear_orden_venta(request):
             # Crear la orden de venta
             ordenVenta = OrdenVenta.objects.create(
                 id_cliente_id=data.get("id_cliente"),
-                id_estado_venta_id=3,  # estado por defecto
+                id_estado_venta_id=8,  # estado por defecto
                 id_prioridad_id=data.get("id_prioridad"),
                 fecha_entrega = data.get("fecha_entrega")
             )
@@ -303,6 +339,8 @@ def crear_orden_venta(request):
                     id_producto_id=p["id_producto"],
                     cantidad=p["cantidad"]
                 )
+
+            actualizar_estado_orden(ordenVenta)
 
             # Armar respuesta con toda la información
             orden_data = {
