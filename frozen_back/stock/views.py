@@ -1,7 +1,13 @@
 from django.shortcuts import render
-
-# Create your views here.
+from stock.models import LoteProduccion
 from rest_framework import viewsets, filters
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.decorators import api_view  # <- IMPORT IMPORTANTE
+from django_filters.rest_framework import DjangoFilterBackend
+from stock.services import cantidad_total_disponible_producto,  verificar_stock_y_enviar_alerta
+
+
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import (
     EstadoLoteProduccion,
@@ -54,3 +60,36 @@ class LoteProduccionMateriaViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter, DjangoFilterBackend]
     search_fields = ["id_lote_produccion__id_producto__nombre", "id_lote_materia_prima__id_materia_prima__nombre"]
     filterset_fields = ["id_lote_produccion", "id_lote_materia_prima"]
+
+
+
+@api_view(["GET"])
+def cantidad_total_producto_view(request, id_producto):
+    """
+    Endpoint que devuelve la cantidad total disponible de un producto.
+    """
+    total = cantidad_total_disponible_producto(id_producto)
+    return Response(
+        {"id_producto": id_producto, "cantidad_disponible": total},
+        status=status.HTTP_200_OK
+    )
+
+
+
+
+@api_view(["GET"])
+def verificar_stock_view(request, id_producto):
+    """
+    Endpoint que verifica stock y envía alerta por correo.
+    Recibe parámetro email en query params.
+    """
+    email = request.query_params.get("email")
+    if not email:
+        return Response(
+            {"error": "Debe especificar el parámetro 'email' en la consulta."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    resultado = verificar_stock_y_enviar_alerta(id_producto, email)
+    status_code = status.HTTP_200_OK if "error" not in resultado else status.HTTP_404_NOT_FOUND
+    return Response(resultado, status=status_code)

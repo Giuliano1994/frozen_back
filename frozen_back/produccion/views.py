@@ -79,10 +79,6 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['patch'])
     def actualizar_estado(self, request, pk=None):
 
-        print("actualizar_estado")
-        print(request.data)
-        print(pk)
-        print(self.get_object())
         """
         Endpoint personalizado para actualizar el estado de una orden de producción.
         Actualiza automáticamente el estado del lote asociado según las reglas de negocio.
@@ -105,8 +101,6 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
             nuevo_estado = serializer.validated_data['id_estado_orden_produccion']
             estado_descripcion = nuevo_estado.descripcion
             
-            print(f"Estado recibido: '{estado_descripcion}'")
-            
             # Actualizar el estado de la orden
             orden.id_estado_orden_produccion = nuevo_estado
             orden.save()
@@ -114,41 +108,43 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
             # Actualizar el estado del lote según las reglas de negocio
             if orden.id_lote_produccion:
                 lote = orden.id_lote_produccion
-                print(f"Lote encontrado: {lote}")
                 
                 if estado_descripcion.lower() == 'finalizada':
-                    print("Finalizada - cambiando lote a Disponible")
                     # Si la orden está finalizada, el lote pasa a "Disponible"
                     try:
                         estado_disponible = EstadoLoteProduccion.objects.get(
                             descripcion__iexact="Disponible"
                         )
-                        print(f"Estado disponible encontrado: {estado_disponible}")
                         lote.id_estado_lote_produccion = estado_disponible
                         lote.save()
-                        print("Lote actualizado exitosamente")
                     except EstadoLoteProduccion.DoesNotExist:
-                        print("Error: Estado 'Disponible' no encontrado")
                         return Response(
                             {'error': 'Estado de lote "Disponible" no encontrado'}, 
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR
                         )
                         
                 elif estado_descripcion.lower() == 'cancelado':
-                    print("Cancelado - cambiando lote a Cancelado")
                     # Si la orden está cancelada, el lote pasa a "Cancelado"
                     try:
                         estado_cancelado = EstadoLoteProduccion.objects.get(
                             descripcion__iexact="Cancelado"
                         )
-                        print(f"Estado cancelado encontrado: {estado_cancelado}")
                         lote.id_estado_lote_produccion = estado_cancelado
                         lote.save()
-                        print("Lote cancelado exitosamente")
                     except EstadoLoteProduccion.DoesNotExist:
-                        print("Error: Estado 'Cancelado' no encontrado")
                         return Response(
                             {'error': 'Estado de lote "Cancelado" no encontrado'}, 
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                        )
+                elif estado_descripcion.lower() == 'Pendiente de inicio':
+                    # Si la orden cambia a estado Pendiente de inicio, el lote pasa a "En espera""
+                    try:
+                        estado_espera = EstadoLoteProduccion.objects.get(descripcion__iexact="En espera")
+                        lote.id_estado_lote_produccion = estado_espera
+                        lote.save()
+                    except EstadoLoteProduccion.DoesNotExist:
+                        return Response(
+                            {'error': 'Estado de lote "En espera" no encontrado'}, 
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR
                         )
                 else:
