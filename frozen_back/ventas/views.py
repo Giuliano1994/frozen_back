@@ -151,7 +151,7 @@ def detalle_orden_venta(request, orden_id):
     return Response(serializer.data)
 
 
-
+"""
 @csrf_exempt
 def actualizar_orden_venta(request):
     if request.method == "PUT":
@@ -223,6 +223,139 @@ def actualizar_orden_venta(request):
             return JsonResponse({"error": str(e)}, status=400)
 
     return JsonResponse({"error": "Método no permitido"}, status=405)
+"""
+
+
+
+@csrf_exempt
+def actualizar_orden_venta(request):
+    if request.method == "PUT":
+        try:
+            data = json.loads(request.body)
+
+            id_orden_venta = data.get("id_orden_venta")
+            if not id_orden_venta:
+                return JsonResponse({"error": "El campo 'id_orden_venta' es obligatorio"}, status=400)
+
+            # Buscar la orden
+            try:
+                ordenVenta = OrdenVenta.objects.get(pk=id_orden_venta)
+            except OrdenVenta.DoesNotExist:
+                return JsonResponse({"error": "Orden de venta no encontrada"}, status=404)
+            
+            # Actualizar fecha_entrega y prioridad si vienen en el JSON
+            fecha_entrega = data.get("fecha_entrega")
+            prioridad = data.get("id_prioridad")
+
+            if fecha_entrega:
+                ordenVenta.fecha_entrega = fecha_entrega
+            if prioridad is not None:  
+                ordenVenta.id_prioridad_id = prioridad  
+
+            ordenVenta.save()
+
+            # Eliminar los productos actuales de la orden
+            OrdenVentaProducto.objects.filter(id_orden_venta=ordenVenta).delete()
+
+            # Insertar los nuevos productos
+            productos = data.get("productos", [])
+            for p in productos:
+                OrdenVentaProducto.objects.create(
+                    id_orden_venta=ordenVenta,
+                    id_producto_id=p["id_producto"],
+                    cantidad=p["cantidad"]
+                )
+
+            # Armar respuesta con la orden actualizada
+            orden_data = {
+                "id_orden_venta": ordenVenta.id_orden_venta,
+                "prioridad": ordenVenta.id_prioridad.descripcion,
+                "fecha_entrega": ordenVenta.fecha_entrega,
+                "cliente": {
+                    "id": ordenVenta.id_cliente.id_cliente,
+                    "nombre": ordenVenta.id_cliente.nombre
+                },
+                "estado": {
+                    "id": ordenVenta.id_estado_venta.id_estado_venta,
+                    "descripcion": ordenVenta.id_estado_venta.descripcion
+                },
+                "productos": [
+                    {
+                        "id": op.id_producto.id_producto,
+                        "nombre": op.id_producto.nombre,
+                        "cantidad": op.cantidad
+                    }
+                    for op in OrdenVentaProducto.objects.filter(id_orden_venta=ordenVenta)
+                ]
+            }
+
+            return JsonResponse(orden_data, status=200, safe=False)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+
+    return JsonResponse({"error": "Método no permitido"}, status=405)
+
+
+
+@csrf_exempt
+def cambiar_estado_orden_venta(request):
+    """
+    Endpoint para cambiar el estado de una orden de venta.
+    Espera un JSON con:
+    {
+        "id_orden_venta": <int>,
+        "id_estado_venta": <int>
+    }
+    """
+    if request.method == "PUT":
+        try:
+            data = json.loads(request.body)
+
+            id_orden_venta = data.get("id_orden_venta")
+            id_estado_venta = data.get("id_estado_venta")
+
+            # Validaciones básicas
+            if not id_orden_venta or not id_estado_venta:
+                return JsonResponse(
+                    {"error": "Se requieren 'id_orden_venta' e 'id_estado_venta'."},
+                    status=400
+                )
+
+            # Buscar la orden
+            try:
+                orden = OrdenVenta.objects.get(pk=id_orden_venta)
+            except OrdenVenta.DoesNotExist:
+                return JsonResponse({"error": "Orden de venta no encontrada."}, status=404)
+
+            # Buscar el nuevo estado
+            try:
+                nuevo_estado = EstadoVenta.objects.get(pk=id_estado_venta)
+            except EstadoVenta.DoesNotExist:
+                return JsonResponse({"error": "Estado de venta no encontrado."}, status=404)
+
+            # Actualizar el estado
+            orden.id_estado_venta = nuevo_estado
+            orden.save(update_fields=["id_estado_venta"])
+
+            # Armar respuesta
+            data = {
+                "id_orden_venta": orden.id_orden_venta,
+                "nuevo_estado": {
+                    "id": nuevo_estado.id_estado_venta,
+                    "descripcion": nuevo_estado.descripcion
+                },
+                "mensaje": "Estado actualizado correctamente."
+            }
+
+            return JsonResponse(data, status=200)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+
+    return JsonResponse({"error": "Método no permitido."}, status=405)
+
+
 
 
 @csrf_exempt
@@ -264,7 +397,7 @@ def listar_ordenes_venta(request):
 
 
 
-
+"""
 @csrf_exempt
 def crear_orden_venta_VERIFICAR_FUNCIONAMIENTO(request):
     print("crear_orden_venta called") 
@@ -313,7 +446,7 @@ def crear_orden_venta_VERIFICAR_FUNCIONAMIENTO(request):
         return JsonResponse({"error": str(e)}, status=400)
 
 
-
+"""
 
 
 
