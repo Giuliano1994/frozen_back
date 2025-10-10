@@ -3,8 +3,10 @@ from rest_framework import viewsets, filters, serializers as drf_serializers, st
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
+
+from recetas.models import Receta, RecetaMateriaPrima
 from .models import EstadoOrdenProduccion, LineaProduccion, OrdenProduccion, NoConformidad
-from stock.models import LoteProduccion, EstadoLoteProduccion
+from stock.models import EstadoLoteMateriaPrima, LoteMateriaPrima, LoteProduccion, EstadoLoteProduccion
 from .serializers import (
     EstadoOrdenProduccionSerializer,
     LineaProduccionSerializer,
@@ -15,6 +17,8 @@ from .serializers import (
 from .filters import OrdenProduccionFilter
 from django.utils import timezone
 from datetime import timedelta
+from django.db.models import Sum
+from rest_framework.exceptions import ValidationError
 
 # ------------------------------
 # ViewSets básicos
@@ -53,17 +57,69 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
             return OrdenProduccionCreateSerializer
         return OrdenProduccionSerializer
 
-    def perform_create(self, serializer):
-        # Buscar el estado inicial "Pendiente de inicio"
-        estado_inicial = EstadoOrdenProduccion.objects.get(descripcion__iexact="Pendiente de inicio")
 
-        # Guardar la orden con todos los datos de la request y el estado inicial
+    def perform_create(self, serializer):
+        """
+        Crea una nueva orden de producción.
+        - Verifica si hay stock suficiente de materias primas según la receta del producto.
+        - El stock se calcula como la suma de los lotes disponibles.
+        - Si no hay suficiente stock, el estado inicial es 'En espera'.
+        - Si hay suficiente stock, el estado inicial es 'Pendiente de inicio'.
+        - Crea automáticamente el lote de producción asociado.
+        """
+        data = serializer.validated_data
+        producto = data["id_producto"]
+        cantidad_a_producir = data["cantidad"]
+
+        # Buscar receta del producto
+        try:
+            receta = Receta.objects.get(id_producto=producto)
+        except Receta.DoesNotExist:
+            raise ValidationError({"error": f"No se encontró una receta para el producto {producto.nombre}"})
+
+        # Obtener los ingredientes requeridos
+        ingredientes = RecetaMateriaPrima.objects.filter(id_receta=receta)
+
+        # Verificar stock sumando los lotes "disponibles"
+        stock_suficiente = True
+        materias_faltantes = []
+
+        try:
+            estado_disponible = EstadoLoteMateriaPrima.objects.get(descripcion__iexact="Disponible")
+        except EstadoLoteMateriaPrima.DoesNotExist:
+            raise ValidationError({"error": 'No existe el estado "Disponible" en EstadoLoteMateriaPrima'})
+
+        for ingrediente in ingredientes:
+            materia = ingrediente.id_materia_prima
+            cantidad_necesaria = ingrediente.cantidad * cantidad_a_producir
+
+            # Sumar los lotes disponibles de esa materia prima
+            stock_total = (
+                LoteMateriaPrima.objects.filter(
+                    id_materia_prima=materia,
+                    id_estado_lote_materia_prima=estado_disponible
+                ).aggregate(total=Sum("cantidad"))["total"] or 0
+            )
+
+            if stock_total < cantidad_necesaria:
+                stock_suficiente = False
+                faltante = cantidad_necesaria - stock_total
+                materias_faltantes.append({
+                    "materia_prima": materia.nombre,
+                    "faltante": faltante
+                })
+
+        # Determinar estado inicial según stock
+        if stock_suficiente:
+            estado_inicial = EstadoOrdenProduccion.objects.get(descripcion__iexact="Pendiente de inicio")
+        else:
+            estado_inicial = EstadoOrdenProduccion.objects.get(descripcion__iexact="En espera")
+
+        # Guardar la orden con el estado inicial
         orden = serializer.save(id_estado_orden_produccion=estado_inicial)
 
-        # Buscar el estado "En espera" para el lote
+        # Crear el lote de producción asociado
         estado_espera = EstadoLoteProduccion.objects.get(descripcion__iexact="En espera")
-
-        # Crear lote asociado al producto
         lote = LoteProduccion.objects.create(
             id_producto=orden.id_producto,
             fecha_produccion=timezone.now().date(),
@@ -72,9 +128,15 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
             id_estado_lote_produccion=estado_espera
         )
 
-        # Asignar el lote recién creado a la orden
         orden.id_lote_produccion = lote
         orden.save()
+
+        # Si no hay stock suficiente, mostrar advertencia en consola
+        if not stock_suficiente:
+            print("⚠️ Materias primas insuficientes para producir la totalidad del pedido:")
+            for item in materias_faltantes:
+                print(f"- {item['materia_prima']}: faltan {item['faltante']} unidades")
+
 
     @action(detail=True, methods=['patch'])
     def actualizar_estado(self, request, pk=None):
