@@ -62,9 +62,8 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
         """
         Crea una nueva orden de producción.
         - Verifica si hay stock suficiente de materias primas según la receta del producto.
-        - El stock se calcula como la suma de los lotes disponibles.
         - Si no hay suficiente stock, el estado inicial es 'En espera'.
-        - Si hay suficiente stock, el estado inicial es 'Pendiente de inicio'.
+        - Si hay suficiente stock, el estado inicial es 'Pendiente de inicio' y descuenta automáticamente el stock de los lotes.
         - Crea automáticamente el lote de producción asociado.
         """
         data = serializer.validated_data
@@ -89,6 +88,7 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
         except EstadoLoteMateriaPrima.DoesNotExist:
             raise ValidationError({"error": 'No existe el estado "Disponible" en EstadoLoteMateriaPrima'})
 
+        # Chequear stock
         for ingrediente in ingredientes:
             materia = ingrediente.id_materia_prima
             cantidad_necesaria = ingrediente.cantidad * cantidad_a_producir
@@ -131,11 +131,42 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
         orden.id_lote_produccion = lote
         orden.save()
 
-        # Si no hay stock suficiente, mostrar advertencia en consola
-        if not stock_suficiente:
-            print("⚠️ Materias primas insuficientes para producir la totalidad del pedido:")
+        # Si hay stock suficiente, descontar de los lotes (FIFO)
+        if stock_suficiente:
+            for ingrediente in ingredientes:
+                materia = ingrediente.id_materia_prima
+                cantidad_necesaria = ingrediente.cantidad * cantidad_a_producir
+
+                lotes = (
+                    LoteMateriaPrima.objects.filter(
+                        id_materia_prima=materia,
+                        id_estado_lote_materia_prima=estado_disponible
+                    )
+                    .order_by("fecha_vencimiento")  # FIFO: usa los más antiguos primero
+                )
+
+                for lote_mp in lotes:
+                    if cantidad_necesaria <= 0:
+                        break
+
+                    if lote_mp.cantidad <= cantidad_necesaria:
+                        cantidad_necesaria -= lote_mp.cantidad
+                        lote_mp.cantidad = 0
+                        # Opcional: cambiar estado del lote si se vació
+                        estado_agotado, _ = EstadoLoteMateriaPrima.objects.get_or_create(descripcion__iexact="Agotado")
+                        lote_mp.id_estado_lote_materia_prima = estado_agotado
+                    else:
+                        lote_mp.cantidad -= cantidad_necesaria
+                        cantidad_necesaria = 0
+
+                    lote_mp.save()
+
+        # Si no hay stock suficiente, mostrar advertencia en consola ,Proximamente hay que agregar alerta al supervisor
+        else:
+            print(" Materias primas insuficientes para producir la totalidad del pedido:")
             for item in materias_faltantes:
                 print(f"- {item['materia_prima']}: faltan {item['faltante']} unidades")
+
 
 
     @action(detail=True, methods=['patch'])
