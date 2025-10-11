@@ -27,6 +27,9 @@ DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
 
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",]
+
 # CORS settings --> despues lo vamos a cambiar para que solo acepte el que corresponde al front demomento permitimos todo
 CORS_ALLOW_ALL_ORIGINS = True
 

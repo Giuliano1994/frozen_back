@@ -24,6 +24,22 @@ class LoteProduccion(models.Model):
     fecha_produccion = models.DateField(blank=True, null=True)
     fecha_vencimiento = models.DateField(blank=True, null=True)
     cantidad = models.IntegerField()
+  
+    @property
+    def cantidad_reservada(self):
+        """Calcula la cantidad total reservada para este lote sumando las reservas."""
+        # Suma todas las 'cantidad_reservada' de los registros de ReservaStock
+        # que apuntan a este lote (self).
+        total_reservado = self.reservas.aggregate(
+            total=models.Sum('cantidad_reservada')
+        )['total']
+        return total_reservado or 0
+
+    @property
+    def cantidad_disponible(self):
+        """Calcula la cantidad real disponible para nuevas reservas."""
+        return self.cantidad - self.cantidad_reservada
+    
     id_estado_lote_produccion = models.ForeignKey(EstadoLoteProduccion, on_delete=models.CASCADE, db_column="id_estado_lote_produccion")
 
     class Meta:
@@ -35,6 +51,7 @@ class LoteMateriaPrima(models.Model):
     id_materia_prima = models.ForeignKey(MateriaPrima, on_delete=models.CASCADE, db_column="id_materia_prima")
     fecha_vencimiento = models.DateField(blank=True, null=True)
     cantidad = models.IntegerField()
+    cantidad_reservada = models.IntegerField(default=0)
     id_estado_lote_materia_prima = models.ForeignKey(EstadoLoteMateriaPrima, on_delete=models.CASCADE, db_column="id_estado_lote_materia_prima")
 
     class Meta:
@@ -49,3 +66,35 @@ class LoteProduccionMateria(models.Model):
 
     class Meta:
         db_table = "lote_produccion_materia"
+
+
+
+class ReservaStock(models.Model):
+    """
+    Este modelo vincula una orden de venta con un lote de producción,
+    registrando la cantidad exacta reservada de ese lote para esa orden.
+    """
+    id_reserva = models.AutoField(primary_key=True)
+    
+    # La línea de la orden que necesita el producto
+    id_orden_venta_producto = models.ForeignKey(
+        'ventas.OrdenVentaProducto', # Usamos string para evitar importación circular
+        on_delete=models.CASCADE,
+        related_name="reservas"
+    )
+    
+    # El lote del cual se está reservando el stock
+    id_lote_produccion = models.ForeignKey(
+        LoteProduccion, 
+        on_delete=models.CASCADE,
+        related_name="reservas"
+    )
+    
+    # La cantidad reservada en esta transacción específica
+    cantidad_reservada = models.PositiveIntegerField()
+    
+    fecha_reserva = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "reserva_stock"
+        unique_together = ('id_orden_venta_producto', 'id_lote_produccion')

@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import api_view  # <- IMPORT IMPORTANTE
 from django_filters.rest_framework import DjangoFilterBackend
-from stock.services import cantidad_total_disponible_producto,  verificar_stock_y_enviar_alerta
+from stock.services import get_stock_disponible_para_producto,  verificar_stock_y_enviar_alerta
 from django.views.decorators.csrf import csrf_exempt
 from produccion.services import procesar_ordenes_en_espera
 
@@ -87,7 +87,7 @@ def cantidad_total_producto_view(request, id_producto):
     """
     Endpoint que devuelve la cantidad total disponible de un producto.
     """
-    total = cantidad_total_disponible_producto(id_producto)
+    total = get_stock_disponible_para_producto(id_producto)
     return Response(
         {"id_producto": id_producto, "cantidad_disponible": total},
         status=status.HTTP_200_OK
@@ -112,6 +112,9 @@ def verificar_stock_view(request, id_producto):
     resultado = verificar_stock_y_enviar_alerta(id_producto, email)
     status_code = status.HTTP_200_OK if "error" not in resultado else status.HTTP_404_NOT_FOUND
     return Response(resultado, status=status_code)
+
+
+
 
 @csrf_exempt
 def agregar_o_crear_lote(request):

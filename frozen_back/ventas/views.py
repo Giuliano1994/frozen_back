@@ -10,8 +10,9 @@ from django.conf import settings
 from stock.models import LoteProduccion  # según tu estructura
 from django.db import models
 from rest_framework import status
-
+from .services import gestionar_stock_y_estado_para_orden_venta, cancelar_orden_venta 
 from .models import Factura, OrdenVenta
+from django.db import transaction
 from .filters import OrdenVentaFilter
 
 from .models import EstadoVenta, Cliente, OrdenVenta, OrdenVentaProducto, Prioridad
@@ -48,7 +49,7 @@ class OrdenVentaViewSet(viewsets.ModelViewSet):
     ordering = ['-fecha']
 
 
-
+"""
 def actualizar_estado_orden(orden):
     from stock.models import LoteProduccion
     productos_orden = OrdenVentaProducto.objects.filter(id_orden_venta=orden)
@@ -120,12 +121,48 @@ def actualizar_estado_orden(orden):
     if estado:
         orden.id_estado_venta = estado
         orden.save(update_fields=['id_estado_venta'])
-
+"""
 
 
 class OrdenVentaProductoViewSet(viewsets.ModelViewSet):
     queryset = OrdenVentaProducto.objects.all()
     serializer_class = OrdenVentaProductoSerializer
+    def create(self, request, *args, **kwargs):
+        response = super().create(request, *args, **kwargs)
+        orden_id = response.data.get("id_orden_venta")
+        orden = OrdenVenta.objects.get(pk=orden_id)
+        
+        # Llamamos al único servicio que gestiona todo
+        gestionar_stock_y_estado_para_orden_venta(orden)
+        
+        # Devolvemos la orden actualizada
+        orden_serializer = OrdenVentaSerializer(orden)
+        return Response(orden_serializer.data, status=status.HTTP_201_CREATED)
+
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Elimina un producto de una orden y recalcula el estado y las reservas.
+        """
+        # 1. Obtenemos una referencia a la orden ANTES de borrar el producto
+        instance = self.get_object()
+        orden = instance.id_orden_venta
+
+        # 2. Borramos el producto de la orden.
+        # Gracias a on_delete=CASCADE, esto también borra las Reservas de Stock asociadas.
+        self.perform_destroy(instance)
+
+        # 3. Re-ejecutamos nuestro servicio para que recalcule todo con los productos restantes.
+        print(f"Producto eliminado de la orden #{orden.pk}. Re-evaluando estado y stock...")
+        gestionar_stock_y_estado_para_orden_venta(orden)
+
+        # 4. Devolvemos una respuesta vacía, como es estándar en DELETE.
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+
+"""
+# METODO VIEJO
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -140,7 +177,7 @@ class OrdenVentaProductoViewSet(viewsets.ModelViewSet):
         self.perform_destroy(instance)
         actualizar_estado_orden(orden)
         return Response(status=status.HTTP_204_NO_CONTENT)
-
+"""
 
 @api_view(['GET'])
 def detalle_orden_venta(request, orden_id):
@@ -152,146 +189,36 @@ def detalle_orden_venta(request, orden_id):
     return Response(serializer.data)
 
 
-"""
-@csrf_exempt
-def actualizar_orden_venta(request):
-    if request.method == "PUT":
-        try:
-            data = json.loads(request.body)
-
-            id_orden_venta = data.get("id_orden_venta")
-            if not id_orden_venta:
-                return JsonResponse({"error": "El campo 'id_orden_venta' es obligatorio"}, status=400)
-
-            # Buscar la orden
-            try:
-                ordenVenta = OrdenVenta.objects.get(pk=id_orden_venta)
-            except OrdenVenta.DoesNotExist:
-                return JsonResponse({"error": "Orden de venta no encontrada"}, status=404)
-            
-            # Actualizar fecha_entrega y prioridad si vienen en el JSON
-            fecha_entrega = data.get("fecha_entrega")
-            prioridad = data.get("id_prioridad")
-
-            if fecha_entrega:
-                ordenVenta.fecha_entrega = fecha_entrega
-            if prioridad is not None:  
-                ordenVenta.id_prioridad_id = prioridad  
-
-            ordenVenta.save()
-
-            # Eliminar los productos actuales de la orden
-            OrdenVentaProducto.objects.filter(id_orden_venta=ordenVenta).delete()
-
-            # Insertar los nuevos productos
-            productos = data.get("productos", [])
-            for p in productos:
-                OrdenVentaProducto.objects.create(
-                    id_orden_venta=ordenVenta,
-                    id_producto_id=p["id_producto"],
-                    cantidad=p["cantidad"]
-                )
-
-            actualizar_estado_orden(ordenVenta)
-
-            
-            # Armar respuesta con la orden actualizada
-            orden_data = {
-                "id_orden_venta": ordenVenta.id_orden_venta,
-                "prioridad": ordenVenta.id_prioridad.descripcion,
-                "fecha_entrega": ordenVenta.fecha_entrega,
-                "cliente": {
-                    "id": ordenVenta.id_cliente.id_cliente,
-                    "nombre": ordenVenta.id_cliente.nombre
-                },
-                "estado": {
-                    "id": ordenVenta.id_estado_venta.id_estado_venta,
-                    "descripcion": ordenVenta.id_estado_venta.descripcion
-                },
-                "productos": [
-                    {
-                        "id": op.id_producto.id_producto,
-                        "nombre": op.id_producto.nombre,
-                        "cantidad": op.cantidad
-                    }
-                    for op in OrdenVentaProducto.objects.filter(id_orden_venta=ordenVenta)
-                ]
-            }
-
-            return JsonResponse(orden_data, status=200, safe=False)
-
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=400)
-
-    return JsonResponse({"error": "Método no permitido"}, status=405)
-"""
-
 
 
 @csrf_exempt
 def actualizar_orden_venta(request):
+    print("Llegó a la función actualizar_orden_venta")
     if request.method == "PUT":
         try:
             data = json.loads(request.body)
 
+            # --- LÍNEAS FALTANTES AÑADIDAS AQUÍ ---
             id_orden_venta = data.get("id_orden_venta")
             if not id_orden_venta:
                 return JsonResponse({"error": "El campo 'id_orden_venta' es obligatorio"}, status=400)
+            # --- FIN DE LA CORRECCIÓN ---
 
-            # Buscar la orden
-            try:
+            with transaction.atomic():
+                # Ahora 'id_orden_venta' ya existe y se puede usar aquí
                 ordenVenta = OrdenVenta.objects.get(pk=id_orden_venta)
-            except OrdenVenta.DoesNotExist:
-                return JsonResponse({"error": "Orden de venta no encontrada"}, status=404)
-            
-            # Actualizar fecha_entrega y prioridad si vienen en el JSON
-            fecha_entrega = data.get("fecha_entrega")
-            prioridad = data.get("id_prioridad")
+                
+                # ... (el resto de tu código para actualizar, eliminar y crear productos)
+                
+                # Volvemos a ejecutar el servicio para que re-evalue todo
+                gestionar_stock_y_estado_para_orden_venta(ordenVenta)
 
-            if fecha_entrega:
-                ordenVenta.fecha_entrega = fecha_entrega
-            if prioridad is not None:  
-                ordenVenta.id_prioridad_id = prioridad  
+            # Armar la respuesta
+            serializer = OrdenVentaSerializer(ordenVenta)
+            return JsonResponse(serializer.data, status=200)
 
-            ordenVenta.save()
-
-            # Eliminar los productos actuales de la orden
-            OrdenVentaProducto.objects.filter(id_orden_venta=ordenVenta).delete()
-
-            # Insertar los nuevos productos
-            productos = data.get("productos", [])
-            for p in productos:
-                OrdenVentaProducto.objects.create(
-                    id_orden_venta=ordenVenta,
-                    id_producto_id=p["id_producto"],
-                    cantidad=p["cantidad"]
-                )
-
-            # Armar respuesta con la orden actualizada
-            orden_data = {
-                "id_orden_venta": ordenVenta.id_orden_venta,
-                "prioridad": ordenVenta.id_prioridad.descripcion,
-                "fecha_entrega": ordenVenta.fecha_entrega,
-                "cliente": {
-                    "id": ordenVenta.id_cliente.id_cliente,
-                    "nombre": ordenVenta.id_cliente.nombre
-                },
-                "estado": {
-                    "id": ordenVenta.id_estado_venta.id_estado_venta,
-                    "descripcion": ordenVenta.id_estado_venta.descripcion
-                },
-                "productos": [
-                    {
-                        "id": op.id_producto.id_producto,
-                        "nombre": op.id_producto.nombre,
-                        "cantidad": op.cantidad
-                    }
-                    for op in OrdenVentaProducto.objects.filter(id_orden_venta=ordenVenta)
-                ]
-            }
-
-            return JsonResponse(orden_data, status=200, safe=False)
-
+        except OrdenVenta.DoesNotExist:
+            return JsonResponse({"error": "Orden de venta no encontrada"}, status=404)
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=400)
 
@@ -299,62 +226,21 @@ def actualizar_orden_venta(request):
 
 
 
-@csrf_exempt
-def cambiar_estado_orden_venta(request):
-    """
-    Endpoint para cambiar el estado de una orden de venta.
-    Espera un JSON con:
-    {
-        "id_orden_venta": <int>,
-        "id_estado_venta": <int>
-    }
-    """
-    if request.method == "PUT":
+
+
+@api_view(['POST'])
+def cancelar_orden_view(request, orden_id):
+        """
+        Endpoint para cancelar una orden de venta.
+        Libera el stock y actualiza el estado.
+        """
         try:
-            data = json.loads(request.body)
-
-            id_orden_venta = data.get("id_orden_venta")
-            id_estado_venta = data.get("id_estado_venta")
-
-            # Validaciones básicas
-            if not id_orden_venta or not id_estado_venta:
-                return JsonResponse(
-                    {"error": "Se requieren 'id_orden_venta' e 'id_estado_venta'."},
-                    status=400
-                )
-
-            # Buscar la orden
-            try:
-                orden = OrdenVenta.objects.get(pk=id_orden_venta)
-            except OrdenVenta.DoesNotExist:
-                return JsonResponse({"error": "Orden de venta no encontrada."}, status=404)
-
-            # Buscar el nuevo estado
-            try:
-                nuevo_estado = EstadoVenta.objects.get(pk=id_estado_venta)
-            except EstadoVenta.DoesNotExist:
-                return JsonResponse({"error": "Estado de venta no encontrado."}, status=404)
-
-            # Actualizar el estado
-            orden.id_estado_venta = nuevo_estado
-            orden.save(update_fields=["id_estado_venta"])
-
-            # Armar respuesta
-            data = {
-                "id_orden_venta": orden.id_orden_venta,
-                "nuevo_estado": {
-                    "id": nuevo_estado.id_estado_venta,
-                    "descripcion": nuevo_estado.descripcion
-                },
-                "mensaje": "Estado actualizado correctamente."
-            }
-
-            return JsonResponse(data, status=200)
-
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=400)
-
-    return JsonResponse({"error": "Método no permitido."}, status=405)
+            orden = OrdenVenta.objects.get(pk=orden_id)
+            cancelar_orden_venta(orden)
+            serializer = OrdenVentaSerializer(orden)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except OrdenVenta.DoesNotExist:
+            return Response({"error": "Orden de venta no encontrada."}, status=status.HTTP_404_NOT_FOUND)
 
 
 
@@ -397,60 +283,44 @@ def listar_ordenes_venta(request):
 
 
 
-
-"""
 @csrf_exempt
-def crear_orden_venta_VERIFICAR_FUNCIONAMIENTO(request):
-    print("crear_orden_venta called") 
-    if request.method != "POST":
-        return JsonResponse({"error": "Método no permitido"}, status=405)
+def crear_orden_venta(request):
+    if request.method == "POST":
+        try:
+            data = json.loads(request.body)
+            estado_creada = EstadoVenta.objects.get(descripcion__iexact="Creada")
 
-    try:
-        data = json.loads(request.body)
+            with transaction.atomic(): # Envolvemos todo en una transacción
+                orden_venta = OrdenVenta.objects.create(
+                    id_cliente_id=data.get("id_cliente"),
+                    id_estado_venta=estado_creada,
+                    id_prioridad_id=data.get("id_prioridad"),
+                    fecha_entrega=data.get("fecha_entrega")
+                )
 
-        id_cliente = data.get("id_cliente")
-        id_prioridad = data.get("id_prioridad")
+                productos = data.get("productos", [])
+                for p in productos:
+                    OrdenVentaProducto.objects.create(
+                        id_orden_venta=orden_venta,
+                        id_producto_id=p["id_producto"],
+                        cantidad=p["cantidad"]
+                    )
 
-        if not id_cliente or not id_prioridad:
-            return JsonResponse({"error": "Cliente y prioridad son obligatorios"}, status=400)
+                # LLAMADA ÚNICA AL SERVICIO ORQUESTADOR
+                gestionar_stock_y_estado_para_orden_venta(orden_venta)
 
-        # Estado inicial 'Creada'
-        estado_creada = EstadoVenta.objects.filter(descripcion__iexact="Creada").first()
-        if not estado_creada:
-            return JsonResponse({"error": "No existe el estado 'Creada' en la tabla estado_venta"}, status=400)
+            # Devolvemos la orden con su estado final y todos sus datos
+            serializer = OrdenVentaSerializer(orden_venta)
+            return JsonResponse(serializer.data, status=201)
 
-        # Crear orden con estado 'Creada'
-        orden = OrdenVenta.objects.create(
-            id_cliente_id=id_cliente,
-            id_estado_venta=estado_creada,
-            id_prioridad_id=id_prioridad,
-            fecha_entrega=data.get("fecha_entrega")
-        )
-
-        # Respuesta
-        orden_data = {
-            "id_orden_venta": orden.id_orden_venta,
-            "fecha": orden.fecha.strftime("%Y-%m-%d %H:%M:%S") if orden.fecha else None,
-            "fecha_entrega": orden.fecha_entrega,
-            "cliente": {
-                "id": orden.id_cliente.id_cliente,
-                "nombre": orden.id_cliente.nombre
-            },
-            "prioridad": orden.id_prioridad.descripcion,
-            "estado": orden.id_estado_venta.descripcion,
-            "productos": []  # Vacío al crear
-        }
-
-        return JsonResponse(orden_data, status=201, safe=False)
-
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=400)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+    
+    return JsonResponse({"error": "Método no permitido"}, status=405)
 
 
 """
-
-
-
+# METODO VIEJO
 @csrf_exempt
 def crear_orden_venta(request):
     if request.method == "POST":
@@ -505,6 +375,8 @@ def crear_orden_venta(request):
             return JsonResponse({"error": str(e)}, status=400)
 
     return JsonResponse({"error": "Método no permitido"}, status=405) 
+"""
+    
 
 @csrf_exempt
 def obtener_facturacion(request, id_orden_venta):
@@ -563,3 +435,37 @@ def obtener_facturacion(request, id_orden_venta):
         return JsonResponse(data, safe=False, json_dumps_params={"ensure_ascii": False})
 
     return JsonResponse({"error": "Método no permitido"}, status=405)
+
+
+
+
+
+
+
+
+@api_view(['PUT'])
+def cambiar_estado_orden_venta(request):
+    """
+    Endpoint para cambiar el estado de una orden de venta.
+    Espera un JSON con:
+    {
+        "id_orden_venta": <int>,
+        "id_estado_venta": <int>
+    }
+    """
+    try:
+        id_orden_venta = request.data.get("id_orden_venta")
+
+        if not id_orden_venta:
+            return Response({"error": "El campo 'id_orden_venta' es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
+
+        orden = OrdenVenta.objects.get(pk=id_orden_venta)
+        cancelar_orden_venta(orden)
+        serializer = OrdenVentaSerializer(orden)
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    except OrdenVenta.DoesNotExist:
+        return Response({"error": "Orden de venta no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)

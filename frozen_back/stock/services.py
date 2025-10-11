@@ -1,12 +1,14 @@
+from django.db import models, transaction
 from django.core.mail import send_mail
 from productos.models import Producto
-from .models import LoteProduccion
-from django.db.models import Sum
+from .models import LoteProduccion, EstadoLoteProduccion
+from django.db.models import Sum, F
+from django.db.models.functions import Coalesce
 from django.conf import settings
 import threading
 import requests
 
-def cantidad_total_disponible_producto(id_producto):
+def cantidad_total_producto(id_producto):
     """
     Devuelve la cantidad total disponible de un producto sumando
     los lotes en estado 'Disponible'.
@@ -22,14 +24,109 @@ def cantidad_total_disponible_producto(id_producto):
     )
     return total
 
-def verificar_stock_y_enviar_alerta(id_producto, email):
+
+
+def get_stock_disponible_para_producto(id_producto):
+    """
+    Devuelve la cantidad total DISPONIBLE de un producto.
+    Calcula el total reservado para cada lote directamente en la base de datos.
+    """
+    total_disponible = (
+        LoteProduccion.objects
+        .filter(
+            id_producto_id=id_producto,
+            id_estado_lote_produccion__descripcion="Disponible"
+        )
+        # 1. Para cada lote, creamos un campo 'total_reservado'.
+        #    Sumamos las 'cantidad_reservada' de su relación inversa 'reservas'.
+        #    Coalesce(..., 0) convierte el resultado en 0 si un lote no tiene reservas (en vez de None).
+        .annotate(
+            total_reservado=Coalesce(Sum('reservas__cantidad_reservada'), 0)
+        )
+        # 2. Ahora sí, creamos el campo 'disponible' restando el campo que acabamos de calcular.
+        .annotate(
+            disponible=F('cantidad') - F('total_reservado')
+        )
+        # 3. Finalmente, sumamos el total de las cantidades 'disponibles'.
+        .aggregate(
+            total=Sum('disponible')
+        )
+        .get('total') or 0
+    )
+    return total_disponible
+
+# --- NUEVA FUNCIÓN REUTILIZABLE ---
+def verificar_stock_para_orden_venta(orden_venta):
+    """
+    Verifica si hay stock disponible para todos los productos de una orden de venta.
+    Devuelve True si hay stock para todo, False en caso contrario.
+    """
+    from ventas.models import OrdenVentaProducto # Importación local para evitar importación circular
+    
+    productos_orden = OrdenVentaProducto.objects.filter(id_orden_venta=orden_venta)
+    
+    if not productos_orden.exists():
+        return True # Una orden sin productos no tiene problemas de stock
+
+    for item in productos_orden:
+        disponible = get_stock_disponible_para_producto(item.id_producto.pk)
+        if disponible < item.cantidad:
+            print(f"Stock insuficiente para {item.id_producto.nombre}. Necesario: {item.cantidad}, Disponible: {disponible}")
+            return False # Si falta stock para un producto, paramos y devolvemos False
+    
+    return True # Si el bucle termina, hay stock para todos
+
+# --- NUEVA FUNCIÓN REUTILIZABLE ---
+@transaction.atomic
+def descontar_stock_para_orden_venta(orden_venta):
+    """
+    Descuenta del stock la cantidad de productos de una orden de venta.
+    Usa una estrategia FIFO (primero los lotes que vencen antes).
+    Esta función asume que el stock ya fue verificado.
+    """
+    from ventas.models import OrdenVentaProducto # Importación local
+    
+    productos_orden = OrdenVentaProducto.objects.filter(id_orden_venta=orden_venta)
+    estado_disponible = EstadoLoteProduccion.objects.get(descripcion="Disponible")
+    estado_agotado, _ = EstadoLoteProduccion.objects.get_or_create(descripcion="Agotado")
+
+    for item in productos_orden:
+        cantidad_a_descontar = item.cantidad
+        lotes = LoteProduccion.objects.filter(
+            id_producto=item.id_producto,
+            id_estado_lote_produccion=estado_disponible,
+            cantidad__gt=0
+        ).order_by("fecha_vencimiento")
+
+        for lote in lotes:
+            if cantidad_a_descontar <= 0:
+                break
+            
+            cantidad_tomada = min(lote.cantidad, cantidad_a_descontar)
+            
+            lote.cantidad -= cantidad_tomada
+            cantidad_a_descontar -= cantidad_tomada
+            
+            if lote.cantidad == 0:
+                lote.id_estado_lote_produccion = estado_agotado
+            
+            lote.save()
+
+       
+        # Después de actualizar los lotes para este producto, llamamos a la función de alerta.
+        verificar_stock_y_enviar_alerta(item.id_producto.pk)
+
+
+def verificar_stock_y_enviar_alerta(id_producto):
     try:
         producto = Producto.objects.get(pk=id_producto)
     except Producto.DoesNotExist:
         return {"error": f"El producto con ID {id_producto} no existe."}
 
-    total_disponible = cantidad_total_disponible_producto(id_producto)
+    total_disponible = get_stock_disponible_para_producto(id_producto)
+    print("total disponible:", total_disponible)  # Línea de depuración
     umbral = producto.umbral_minimo
+    print("umbral:", umbral)  # Línea de depuración
     alerta = total_disponible < umbral
 
     mensaje = (
@@ -60,7 +157,7 @@ def verificar_stock_y_enviar_alerta(id_producto, email):
         "umbral_minimo": umbral,
         "alerta": alerta,
         "mensaje": mensaje,
-        "email_notificado": email if alerta else None
+      #  "email_notificado": email if alerta else None
     }
 
 def _enviar_correo_async(asunto, cuerpo, destinatario):
