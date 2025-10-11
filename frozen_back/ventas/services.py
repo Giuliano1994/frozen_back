@@ -4,6 +4,7 @@ from stock.models import LoteProduccion, ReservaStock, EstadoLoteProduccion, Est
 from stock.services import get_stock_disponible_para_producto, verificar_stock_y_enviar_alerta
 from stock.models import ReservaStock
 from productos.models import Producto
+from django.db.models import Sum, F, Q
 
 """
 
@@ -196,55 +197,62 @@ def gestionar_stock_y_estado_para_orden_venta(orden_venta: OrdenVenta):
     3. Asigna el estado a la orden según si la reserva fue completa o parcial.
     """
     # Obtenemos los estados que vamos a usar
-    estado_activa, _ = EstadoReserva.objects.get_or_create(descripcion="Activa")
-    estado_cancelada, _ = EstadoReserva.objects.get_or_create(descripcion="Cancelada")
-
-    # --- CAMBIO CLAVE: En lugar de borrar, cancelamos las reservas activas anteriores ---
-    ReservaStock.objects.filter(
-        id_orden_venta_producto__id_orden_venta=orden_venta,
-        id_estado_reserva=estado_activa
-    ).update(id_estado_reserva=estado_cancelada)
-
     lineas_de_orden = OrdenVentaProducto.objects.filter(id_orden_venta=orden_venta)
-    
+    estado_activa, _ = EstadoReserva.objects.get_or_create(descripcion="Activa")
+
     if not lineas_de_orden.exists():
         estado_final, _ = EstadoVenta.objects.get_or_create(descripcion__iexact="Creada")
         orden_venta.id_estado_venta = estado_final
         orden_venta.save()
         return
 
-    stock_completo = True
+    # --- LÓGICA INCREMENTAL ---
+    # 1. Intentamos reservar lo que falte para cada producto
     for linea in lineas_de_orden:
-        stock_disponible = get_stock_disponible_para_producto(linea.id_producto.pk)
-        if stock_disponible < linea.cantidad:
-            stock_completo = False
+        # Calculamos cuánto ya está reservado para esta línea
+        cantidad_ya_reservada = linea.reservas.filter(id_estado_reserva=estado_activa).aggregate(
+            total=Sum('cantidad_reservada')
+        )['total'] or 0
+        
+        cantidad_faltante_a_reservar = linea.cantidad - cantidad_ya_reservada
+
+        if cantidad_faltante_a_reservar > 0:
+            print(f"Producto '{linea.id_producto.nombre}': Faltan {cantidad_faltante_a_reservar} unidades por reservar. Buscando stock...")
+            lotes_disponibles = LoteProduccion.objects.filter(
+                id_producto=linea.id_producto,
+                id_estado_lote_produccion__descripcion="Disponible"
+            ).order_by('fecha_vencimiento')
+
+            for lote in lotes_disponibles:
+                if cantidad_faltante_a_reservar <= 0: break
+                
+                stock_real_disponible_lote = lote.cantidad_disponible
+                cantidad_a_tomar_de_lote = min(cantidad_faltante_a_reservar, stock_real_disponible_lote)
+
+                if cantidad_a_tomar_de_lote > 0:
+                    ReservaStock.objects.create(
+                        id_orden_venta_producto=linea,
+                        id_lote_produccion=lote,
+                        cantidad_reservada=cantidad_a_tomar_de_lote,
+                        id_estado_reserva=estado_activa
+                    )
+                    cantidad_faltante_a_reservar -= cantidad_a_tomar_de_lote
+                    print(f"  > Reservadas {cantidad_a_tomar_de_lote} unidades del lote #{lote.pk}.")
+
+    # --- RE-EVALUACIÓN FINAL ---
+    # 2. Después de intentar reservar, verificamos si la orden está completa
+    stock_completo_final = True
+    for linea in lineas_de_orden:
+        cantidad_total_reservada = linea.reservas.filter(id_estado_reserva=estado_activa).aggregate(
+            total=Sum('cantidad_reservada')
+        )['total'] or 0
+        
+        if cantidad_total_reservada < linea.cantidad:
+            stock_completo_final = False
             break
 
-    print(f"Gestionando reservas para la Orden #{orden_venta.pk}...")
-    for linea in lineas_de_orden:
-        cantidad_a_reservar = linea.cantidad
-        lotes_disponibles = LoteProduccion.objects.filter(
-            id_producto=linea.id_producto,
-            id_estado_lote_produccion__descripcion="Disponible"
-        ).order_by('fecha_vencimiento')
-
-        for lote in lotes_disponibles:
-            if cantidad_a_reservar <= 0: break
-            stock_real_disponible_lote = lote.cantidad_disponible
-            cantidad_reservada_de_lote = min(cantidad_a_reservar, stock_real_disponible_lote)
-
-            if cantidad_reservada_de_lote > 0:
-                # --- CAMBIO CLAVE: Asignamos el estado 'Activa' al crear la reserva ---
-                ReservaStock.objects.create(
-                    id_orden_venta_producto=linea,
-                    id_lote_produccion=lote,
-                    cantidad_reservada=cantidad_reservada_de_lote,
-                    id_estado_reserva=estado_activa  # <-- Se asigna el estado
-                )
-                cantidad_a_reservar -= cantidad_reservada_de_lote
-
-    # Asignar el estado basado en si la reserva fue completa
-    if stock_completo:
+    # 3. Asignar el estado final
+    if stock_completo_final:
         estado_final, _ = EstadoVenta.objects.get_or_create(descripcion__iexact="Pendiente de Pago")
     else:
         estado_final, _ = EstadoVenta.objects.get_or_create(descripcion__iexact="En Preparación")

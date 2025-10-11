@@ -195,6 +195,7 @@ def detalle_orden_venta(request, orden_id):
 def actualizar_orden_venta(request):
     print("Llegó a la función actualizar_orden_venta")
     if request.method == "PUT":
+        breakpoint() 
         try:
             data = json.loads(request.body)
 

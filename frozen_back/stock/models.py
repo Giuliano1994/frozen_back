@@ -27,10 +27,9 @@ class LoteProduccion(models.Model):
   
     @property
     def cantidad_reservada(self):
-        """Calcula la cantidad total reservada para este lote sumando las reservas."""
-        # Suma todas las 'cantidad_reservada' de los registros de ReservaStock
-        # que apuntan a este lote (self).
-        total_reservado = self.reservas.aggregate(
+        """Calcula la cantidad total reservada para este lote sumando solo las reservas 'Activas'."""
+        # --- CAMBIO CLAVE: Añadimos el filtro por el estado de la reserva ---
+        total_reservado = self.reservas.filter(id_estado_reserva__descripcion='Activa').aggregate(
             total=models.Sum('cantidad_reservada')
         )['total']
         return total_reservado or 0
