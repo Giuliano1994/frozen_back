@@ -10,7 +10,7 @@ from django.conf import settings
 from stock.models import LoteProduccion  # según tu estructura
 from django.db import models
 from rest_framework import status
-from .services import gestionar_stock_y_estado_para_orden_venta, cancelar_orden_venta 
+from .services import gestionar_stock_y_estado_para_orden_venta, cancelar_orden_venta, facturar_orden_y_descontar_stock 
 from .models import Factura, OrdenVenta
 from django.db import transaction
 from .filters import OrdenVentaFilter
@@ -380,12 +380,26 @@ def crear_orden_venta(request):
 
 @csrf_exempt
 def obtener_facturacion(request, id_orden_venta):
+    print("Llegó a la función obtener_facturacion")
     if request.method == "GET":
         try:
             # Buscar orden de venta
             orden = OrdenVenta.objects.select_related("id_cliente", "id_estado_venta", "id_prioridad").get(pk=id_orden_venta)
         except OrdenVenta.DoesNotExist:
             return JsonResponse({"error": "No se encontró la orden de venta"}, status=404)
+
+
+
+            # --- MODIFICACIÓN TEMPORAL PARA PRUEBAS ---
+            # Verificamos si la orden no está ya facturada para evitar re-procesar
+        if orden.id_estado_venta.descripcion.lower() != 'facturada':
+            print("--- PRUEBA LOCAL: Cambiando estado a 'Facturada' y descontando stock ---")
+            facturar_orden_y_descontar_stock(orden)
+            # Volvemos a cargar la orden desde la BBDD para que refleje el nuevo estado "Facturada" en la respuesta
+            orden.refresh_from_db()
+            # --- FIN DE LA MODIFICACIÓN ---
+
+
 
         # Buscar factura (si existe)
         factura, creada = Factura.objects.get_or_create(id_orden_venta=orden)
@@ -432,14 +446,10 @@ def obtener_facturacion(request, id_orden_venta):
             "total": total if total else "No disponible"
         }
 
+
         return JsonResponse(data, safe=False, json_dumps_params={"ensure_ascii": False})
 
     return JsonResponse({"error": "Método no permitido"}, status=405)
-
-
-
-
-
 
 
 
@@ -447,12 +457,59 @@ def obtener_facturacion(request, id_orden_venta):
 def cambiar_estado_orden_venta(request):
     """
     Endpoint para cambiar el estado de una orden de venta.
-    Espera un JSON con:
-    {
-        "id_orden_venta": <int>,
-        "id_estado_venta": <int>
-    }
+    Ejecuta la lógica de stock correspondiente para 'Facturada' o 'Cancelada'.
     """
+    try:
+        id_orden_venta = request.data.get("id_orden_venta")
+        id_nuevo_estado = request.data.get("id_estado_venta")
+
+        if not id_orden_venta or not id_nuevo_estado:
+            return Response({"error": "Se requieren 'id_orden_venta' e 'id_estado_venta'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        orden = OrdenVenta.objects.get(pk=id_orden_venta)
+        nuevo_estado = EstadoVenta.objects.get(pk=id_nuevo_estado)
+
+        # --- LÓGICA CORREGIDA ---
+        if nuevo_estado.descripcion.lower() == 'facturada':
+            # Si el estado es "Facturada", llamamos al servicio de descuento físico.
+            facturar_orden_y_descontar_stock(orden)
+            
+        elif nuevo_estado.descripcion.lower() == 'cancelada':
+            # --- CAMBIO CLAVE AÑADIDO ---
+            # Si el estado es "Cancelada", llamamos al servicio de cancelación.
+            cancelar_orden_venta(orden)
+            # --- FIN DEL CAMBIO ---
+            
+        else:
+            # Para cualquier otro cambio de estado que no afecta el stock (ej. Pendiente -> En Preparación),
+            # simplemente lo actualizamos.
+            orden.id_estado_venta = nuevo_estado
+            orden.save()
+        
+        # 'orden' se actualiza dentro del servicio, así que el serializer mostrará el estado final.
+        serializer = OrdenVentaSerializer(orden)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    except (OrdenVenta.DoesNotExist, EstadoVenta.DoesNotExist):
+        return Response({"error": "Orden o Estado no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+"""
+
+@api_view(['PUT'])
+def cambiar_estado_orden_venta(request):
+    
+    #Endpoint para cambiar el estado de una orden de venta.
+    #Espera un JSON con:
+    #{
+    #    "id_orden_venta": <int>,
+    #    "id_estado_venta": <int>
+    #}
+    
     try:
         id_orden_venta = request.data.get("id_orden_venta")
 
@@ -469,3 +526,5 @@ def cambiar_estado_orden_venta(request):
         return Response({"error": "Orden de venta no encontrada."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+"""

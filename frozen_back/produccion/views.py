@@ -19,7 +19,7 @@ from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Sum
 from rest_framework.exceptions import ValidationError
-
+from ventas.services import revisar_ordenes_de_venta_pendientes
 # ------------------------------
 # ViewSets básicos
 # ------------------------------
@@ -210,6 +210,9 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
                         )
                         lote.id_estado_lote_produccion = estado_disponible
                         lote.save()
+                        if lote.id_producto:
+                            print("Llamando a revisar_ordenes_de_venta_pendientes", lote.id_producto)
+                            revisar_ordenes_de_venta_pendientes(lote.id_producto)
                     except EstadoLoteProduccion.DoesNotExist:
                         return Response(
                             {'error': 'Estado de lote "Disponible" no encontrado'}, 

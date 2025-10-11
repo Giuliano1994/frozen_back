@@ -2,7 +2,7 @@ from django.db import models, transaction
 from django.core.mail import send_mail
 from productos.models import Producto
 from .models import LoteProduccion, EstadoLoteProduccion
-from django.db.models import Sum, F
+from django.db.models import Sum, F, Q
 from django.db.models.functions import Coalesce
 from django.conf import settings
 import threading
@@ -29,30 +29,31 @@ def cantidad_total_producto(id_producto):
 def get_stock_disponible_para_producto(id_producto):
     """
     Devuelve la cantidad total DISPONIBLE de un producto.
-    Calcula el total reservado para cada lote directamente en la base de datos.
+    Calcula el total reservado para cada lote sumando ÚNICAMENTE las reservas 'Activas'.
     """
-    total_disponible = (
-        LoteProduccion.objects
-        .filter(
-            id_producto_id=id_producto,
-            id_estado_lote_produccion__descripcion="Disponible"
-        )
-        # 1. Para cada lote, creamos un campo 'total_reservado'.
-        #    Sumamos las 'cantidad_reservada' de su relación inversa 'reservas'.
-        #    Coalesce(..., 0) convierte el resultado en 0 si un lote no tiene reservas (en vez de None).
-        .annotate(
-            total_reservado=Coalesce(Sum('reservas__cantidad_reservada'), 0)
-        )
-        # 2. Ahora sí, creamos el campo 'disponible' restando el campo que acabamos de calcular.
-        .annotate(
-            disponible=F('cantidad') - F('total_reservado')
-        )
-        # 3. Finalmente, sumamos el total de las cantidades 'disponibles'.
-        .aggregate(
-            total=Sum('disponible')
-        )
-        .get('total') or 0
+    # 1. Creamos un filtro para las reservas activas que usaremos en la suma.
+    filtro_reservas_activas = Q(reservas__id_estado_reserva__descripcion='Activa')
+
+    # 2. Anotamos cada lote con la suma de sus reservas activas.
+    lotes_con_reservas = LoteProduccion.objects.filter(
+        id_producto_id=id_producto,
+        id_estado_lote_produccion__descripcion="Disponible"
+    ).annotate(
+        total_reservado=Coalesce(Sum('reservas__cantidad_reservada', filter=filtro_reservas_activas), 0)
     )
+
+    # 3. Anotamos la cantidad disponible para cada lote.
+    lotes_con_disponible = lotes_con_reservas.annotate(
+        disponible=F('cantidad') - F('total_reservado')
+    )
+
+    # 4. Finalmente, sumamos el total de las cantidades disponibles de todos los lotes.
+    resultado_agregado = lotes_con_disponible.aggregate(
+        total=Sum('disponible')
+    )
+
+    total_disponible = resultado_agregado.get('total') or 0
+
     return total_disponible
 
 # --- NUEVA FUNCIÓN REUTILIZABLE ---
