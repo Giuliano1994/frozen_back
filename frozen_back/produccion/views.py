@@ -60,9 +60,36 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
 
 
     def perform_create(self, serializer):
-        estado_inicial = EstadoOrdenProduccion.objects.get(descripcion__iexact="En Espera")
+        """
+        Crea una nueva orden de producción:
+        - Gestiona reservas de materias primas
+        - Determina el estado inicial según stock disponible
+        - Crea automáticamente el lote de producción asociado
+        """
+        # Guardar la orden inicialmente
+        estado_inicial = EstadoOrdenProduccion.objects.get(descripcion__iexact="En espera")
         orden = serializer.save(id_estado_orden_produccion=estado_inicial)
+
+        # Gestionar reservas de materias primas
         gestionar_reservas_para_orden_produccion(orden)
+
+        # Crear el lote de producción automáticamente
+        try:
+            estado_espera = EstadoLoteProduccion.objects.get(descripcion__iexact="En espera")
+        except EstadoLoteProduccion.DoesNotExist:
+            raise ValidationError({"error": 'No existe el estado "En espera" en LoteProduccion'})
+
+        lote = LoteProduccion.objects.create(
+            id_producto=orden.id_producto,
+            id_estado_lote_produccion=estado_espera,
+            cantidad=orden.cantidad,
+            fecha_produccion=timezone.now().date(),
+            fecha_vencimiento=timezone.now().date() + timedelta(days=orden.id_producto.dias_duracion)
+        )
+
+        orden.id_lote_produccion = lote
+        orden.save()
+
         return orden
 
     @action(detail=True, methods=['post'])
