@@ -11,6 +11,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from stock.services import get_stock_disponible_para_producto,  verificar_stock_y_enviar_alerta
 from django.views.decorators.csrf import csrf_exempt
 from produccion.services import procesar_ordenes_en_espera
+from django.db.models import Sum
 
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import (
@@ -236,13 +237,13 @@ def listar_materias_primas(request):
                 id_materia_prima=materia.id_materia_prima,
                 id_estado_lote_materia_prima=estado_disponible.id_estado_lote_materia_prima
             )
-            .aggregate(total=sum('cantidad'))['total']
+            .aggregate(total=Sum('cantidad'))['total']
         )
 
         data.append({
             "id_materia_prima": materia.id_materia_prima,
             "nombre": materia.nombre,
-            "unidad_medida": materia.unidad_medida,
+            "unidad_medida": materia.id_unidad.descripcion,
             "cantidad_disponible": total or 0
         })
 
