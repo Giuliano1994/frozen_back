@@ -2,7 +2,9 @@
 from django.db import transaction
 from django.db.models import Sum
 from .models import OrdenProduccion, EstadoOrdenProduccion
-from stock.models import LoteMateriaPrima, EstadoLoteMateriaPrima, LoteProduccionMateria
+from stock.models import LoteMateriaPrima, EstadoLoteMateriaPrima, LoteProduccionMateria, ReservaMateriaPrima, EstadoReservaMateria
+from recetas.models import Receta, RecetaMateriaPrima
+from django.core.exceptions import ValidationError
 from recetas.models import Receta, RecetaMateriaPrima
 
 
@@ -99,3 +101,133 @@ def procesar_ordenes_en_espera(materia_prima_ingresada):
         except Receta.DoesNotExist:
             print(f"Advertencia: La orden #{orden.id_orden_produccion} no tiene receta asociada. Se omite.")
             continue
+
+@transaction.atomic
+def gestionar_reservas_para_orden_produccion(orden):
+    """
+    Orquesta la reserva de materias primas para una orden de producción.
+    """
+
+    estado_activa, _ = EstadoReservaMateria.objects.get_or_create(descripcion="Activa")
+    estado_cancelada, _ = EstadoReservaMateria.objects.get_or_create(descripcion="Cancelada")
+
+    # Cancelar reservas anteriores activas
+    ReservaMateriaPrima.objects.filter(
+        id_orden_produccion=orden,
+        id_estado_reserva_materia=estado_activa
+    ).update(id_estado_reserva_materia=estado_cancelada)
+
+    # Buscar receta
+    try:
+        receta = Receta.objects.get(id_producto=orden.id_producto)
+    except Receta.DoesNotExist:
+        raise ValidationError({"error": f"No se encontró receta para el producto {orden.id_producto.nombre}"})
+
+    ingredientes = RecetaMateriaPrima.objects.filter(id_receta=receta)
+    estado_disponible = EstadoLoteMateriaPrima.objects.get(descripcion__iexact="Disponible")
+
+    stock_completo = True
+
+    for ingrediente in ingredientes:
+        materia = ingrediente.id_materia_prima
+        cantidad_necesaria = ingrediente.cantidad * orden.cantidad
+
+        lotes_disponibles = LoteMateriaPrima.objects.filter(
+            id_materia_prima=materia,
+            id_estado_lote_materia_prima=estado_disponible
+        ).order_by("fecha_vencimiento")
+
+        cantidad_a_reservar = cantidad_necesaria
+        total_stock = sum([l.cantidad_disponible for l in lotes_disponibles])
+
+        if total_stock < cantidad_necesaria:
+            stock_completo = False
+
+        for lote in lotes_disponibles:
+            if cantidad_a_reservar <= 0:
+                break
+
+            disponible = lote.cantidad_disponible
+            if disponible <= 0:
+                continue
+
+            cantidad_reservada = min(cantidad_a_reservar, disponible)
+            ReservaMateriaPrima.objects.create(
+                id_orden_produccion=orden,
+                id_lote_materia_prima=lote,
+                cantidad_reservada=cantidad_reservada,
+                id_estado_reserva_materia=estado_activa
+            )
+            cantidad_a_reservar -= cantidad_reservada
+
+    # Actualizar estado de la orden
+    if stock_completo:
+        estado_final = EstadoOrdenProduccion.objects.get(descripcion__iexact="Pendiente de inicio")
+    else:
+        estado_final = EstadoOrdenProduccion.objects.get(descripcion__iexact="En espera")
+
+    orden.id_estado_orden_produccion = estado_final
+    orden.save()
+
+
+@transaction.atomic
+def descontar_stock_reservado(orden):
+    """
+    🔹 Descuenta definitivamente el stock reservado cuando la orden de producción se FINALIZA.
+    🔹 Actualiza los lotes de materia prima y marca reservas como 'Consumidas'.
+    🔹 Si un lote llega a 0, cambia su estado a 'Agotado'.
+    """
+
+    # --- Obtener estados necesarios ---
+    try:
+        estado_activa = EstadoReservaMateria.objects.get(descripcion__iexact="Activa")
+        estado_consumida, _ = EstadoReservaMateria.objects.get_or_create(descripcion__iexact="Consumida")
+        estado_agotado, _ = EstadoLoteMateriaPrima.objects.get_or_create(descripcion__iexact="Agotado")
+    except EstadoReservaMateria.DoesNotExist:
+        raise Exception("No se encontró el estado de reserva 'Activa'.")
+
+    # --- Buscar reservas activas asociadas a la orden ---
+    reservas = ReservaMateriaPrima.objects.filter(
+        id_orden_produccion=orden,
+        id_estado_reserva_materia=estado_activa
+    ).select_related("id_lote_materia_prima")
+
+    if not reservas.exists():
+        print(f"⚠️ No hay reservas activas para la Orden #{orden.id_orden_produccion}")
+        return
+
+    print(f"🔹 Descontando stock de {reservas.count()} reservas para la Orden #{orden.id_orden_produccion}...")
+
+    for reserva in reservas:
+        lote = reserva.id_lote_materia_prima
+        cantidad = reserva.cantidad_reservada
+
+        print(f" → Lote {lote.id_lote_materia_prima} ({lote.id_materia_prima.nombre}): descontando {cantidad} unidades")
+
+        # Verificar stock disponible
+        if lote.cantidad < cantidad:
+            raise Exception(
+                f"Error: El lote {lote.id_lote_materia_prima} no tiene suficiente stock. "
+                f"Disponible: {lote.cantidad}, Reservado: {cantidad}"
+            )
+
+        # Descontar del lote
+        lote.cantidad -= cantidad
+        if lote.cantidad <= 0:
+            lote.id_estado_lote_materia_prima = estado_agotado
+            lote.cantidad = 0  # nunca stock negativo
+        lote.save()
+
+        # Registrar en la tabla intermedia (trazabilidad)
+        if orden.id_lote_produccion:
+            LoteProduccionMateria.objects.create(
+                id_lote_produccion=orden.id_lote_produccion,
+                id_lote_materia_prima=lote,
+                cantidad_usada=cantidad
+            )
+
+        # Marcar la reserva como consumida
+        reserva.id_estado_reserva_materia = estado_consumida
+        reserva.save()
+
+    print(f"✅ Stock descontado correctamente para la Orden #{orden.id_orden_produccion}")
