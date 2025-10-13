@@ -178,7 +178,6 @@ def descontar_stock_reservado(orden):
     🔹 Si un lote llega a 0, cambia su estado a 'Agotado'.
     """
 
-    # --- Obtener estados necesarios ---
     try:
         estado_activa = EstadoReservaMateria.objects.get(descripcion__iexact="Activa")
         estado_consumida, _ = EstadoReservaMateria.objects.get_or_create(descripcion__iexact="Consumida")
@@ -186,11 +185,12 @@ def descontar_stock_reservado(orden):
     except EstadoReservaMateria.DoesNotExist:
         raise Exception("No se encontró el estado de reserva 'Activa'.")
 
-    # --- Buscar reservas activas asociadas a la orden ---
-    reservas = ReservaMateriaPrima.objects.filter(
-        id_orden_produccion=orden,
-        id_estado_reserva_materia=estado_activa
-    ).select_related("id_lote_materia_prima")
+    # Buscar reservas activas asociadas a la orden
+    reservas = (
+        ReservaMateriaPrima.objects
+        .filter(id_orden_produccion=orden, id_estado_reserva_materia=estado_activa)
+        .select_related("id_lote_materia_prima", "id_lote_materia_prima__id_materia_prima")
+    )
 
     if not reservas.exists():
         print(f"⚠️ No hay reservas activas para la Orden #{orden.id_orden_produccion}")
@@ -204,21 +204,21 @@ def descontar_stock_reservado(orden):
 
         print(f" → Lote {lote.id_lote_materia_prima} ({lote.id_materia_prima.nombre}): descontando {cantidad} unidades")
 
-        # Verificar stock disponible
+        # Validar stock suficiente
         if lote.cantidad < cantidad:
             raise Exception(
-                f"Error: El lote {lote.id_lote_materia_prima} no tiene suficiente stock. "
+                f"Error: Lote {lote.id_lote_materia_prima} no tiene suficiente stock. "
                 f"Disponible: {lote.cantidad}, Reservado: {cantidad}"
             )
 
-        # Descontar del lote
+        # Descontar del stock físico
         lote.cantidad -= cantidad
         if lote.cantidad <= 0:
+            lote.cantidad = 0
             lote.id_estado_lote_materia_prima = estado_agotado
-            lote.cantidad = 0  # nunca stock negativo
         lote.save()
 
-        # Registrar en la tabla intermedia (trazabilidad)
+        # Registrar trazabilidad
         if orden.id_lote_produccion:
             LoteProduccionMateria.objects.create(
                 id_lote_produccion=orden.id_lote_produccion,
@@ -226,8 +226,9 @@ def descontar_stock_reservado(orden):
                 cantidad_usada=cantidad
             )
 
-        # Marcar la reserva como consumida
+        # Cambiar el estado de la reserva
         reserva.id_estado_reserva_materia = estado_consumida
         reserva.save()
 
     print(f"✅ Stock descontado correctamente para la Orden #{orden.id_orden_produccion}")
+
