@@ -13,7 +13,7 @@ def procesar_ordenes_en_espera(materia_prima_ingresada):
     """
     Busca órdenes de producción 'En espera' que necesiten la materia prima que acaba de ingresar.
     Si ahora tienen stock suficiente para TODOS sus ingredientes, las pasa a 'Pendiente de inicio'
-    y descuenta el stock correspondiente.
+    creando RESERVAS en lugar de descontar directamente.
     """
     print(f"Iniciando revisión de órdenes en espera por ingreso de: {materia_prima_ingresada.nombre}")
 
@@ -22,7 +22,8 @@ def procesar_ordenes_en_espera(materia_prima_ingresada):
         estado_en_espera = EstadoOrdenProduccion.objects.get(descripcion__iexact="En espera")
         estado_pendiente = EstadoOrdenProduccion.objects.get(descripcion__iexact="Pendiente de inicio")
         estado_disponible_mp = EstadoLoteMateriaPrima.objects.get(descripcion__iexact="Disponible")
-    except (EstadoOrdenProduccion.DoesNotExist, EstadoLoteMateriaPrima.DoesNotExist) as e:
+        estado_activa_reserva = EstadoReservaMateria.objects.get(descripcion__iexact="Activa")
+    except (EstadoOrdenProduccion.DoesNotExist, EstadoLoteMateriaPrima.DoesNotExist, EstadoReservaMateria.DoesNotExist) as e:
         print(f"Error: No se encontraron los estados necesarios en la BBDD. {e}")
         return
 
@@ -30,7 +31,7 @@ def procesar_ordenes_en_espera(materia_prima_ingresada):
     ordenes_a_revisar = OrdenProduccion.objects.filter(
         id_estado_orden_produccion=estado_en_espera,
         id_producto__receta__recetamateriaprima__id_materia_prima=materia_prima_ingresada
-    ).distinct()
+    ).distinct().order_by('fecha_creacion')  # Ordenar por más antigua primero
 
     if not ordenes_a_revisar.exists():
         print("No hay órdenes en espera que requieran esta materia prima.")
@@ -47,56 +48,99 @@ def procesar_ordenes_en_espera(materia_prima_ingresada):
             ingredientes = RecetaMateriaPrima.objects.filter(id_receta=receta)
             
             stock_suficiente = True
-            # Volvemos a chequear el stock para TODOS los ingredientes de la orden
+            # Verificar stock DISPONIBLE (considerando reservas existentes)
             for ingrediente in ingredientes:
                 materia = ingrediente.id_materia_prima
                 cantidad_necesaria = ingrediente.cantidad * orden.cantidad
                 
-                stock_total = LoteMateriaPrima.objects.filter(
-                    id_materia_prima=materia,
-                    id_estado_lote_materia_prima=estado_disponible_mp
-                ).aggregate(total=Sum("cantidad"))["total"] or 0
+                # 🔹 CALCULAR: Cuánto ya tenemos reservado vs cuánto nos falta
+                reservas_existentes = ReservaMateriaPrima.objects.filter(
+                    id_orden_produccion=orden,
+                    id_estado_reserva_materia=estado_activa_reserva,
+                    id_lote_materia_prima__id_materia_prima=materia
+                ).aggregate(total_reservado=Sum('cantidad_reservada'))['total_reservado'] or 0
+                
+                cantidad_faltante = max(0, cantidad_necesaria - reservas_existentes)
+                
+                if cantidad_faltante > 0:
+                    # Calcular stock disponible para completar lo que falta
+                    lotes_disponibles = LoteMateriaPrima.objects.filter(
+                        id_materia_prima=materia,
+                        id_estado_lote_materia_prima=estado_disponible_mp
+                    )
+                    
+                    stock_disponible_total = 0
+                    for lote in lotes_disponibles:
+                        stock_disponible_total += lote.cantidad_disponible
 
-                if stock_total < cantidad_necesaria:
-                    stock_suficiente = False
-                    print(f"Falta stock para {materia.nombre}. Se necesitan {cantidad_necesaria}, hay {stock_total}.")
-                    break # Si falta un ingrediente, no hace falta seguir revisando
+                    if stock_disponible_total < cantidad_faltante:
+                        stock_suficiente = False
+                        print(f"Falta stock disponible para {materia.nombre}. Ya reservado: {reservas_existentes}, Faltante: {cantidad_faltante}, Disponible: {stock_disponible_total}.")
+                        break
+                    else:
+                        print(f"✅ {materia.nombre}: Ya reservado: {reservas_existentes}, Faltante: {cantidad_faltante}, Disponible: {stock_disponible_total}")
+                else:
+                    print(f"✅ {materia.nombre}: Ya completamente reservado ({reservas_existentes}/{cantidad_necesaria})")
 
-            # 4. Si hay stock para todo, cambiamos el estado y descontamos
+            # 4. Si hay stock para completar lo faltante, crear RESERVAS adicionales
             if stock_suficiente:
-                print(f"¡Stock suficiente para la Orden #{orden.id_orden_produccion}! Procesando...")
+                print(f"¡Stock suficiente para completar la Orden #{orden.id_orden_produccion}! Creando/actualizando reservas...")
+                
+                reservas_creadas = 0
+                # Completar reservas para cada ingrediente que lo necesite
+                for ingrediente in ingredientes:
+                    materia = ingrediente.id_materia_prima
+                    cantidad_necesaria = ingrediente.cantidad * orden.cantidad
+                    
+                    # Calcular cuánto ya está reservado y cuánto falta
+                    reservas_existentes = ReservaMateriaPrima.objects.filter(
+                        id_orden_produccion=orden,
+                        id_estado_reserva_materia=estado_activa_reserva,
+                        id_lote_materia_prima__id_materia_prima=materia
+                    ).aggregate(total_reservado=Sum('cantidad_reservada'))['total_reservado'] or 0
+                    
+                    cantidad_faltante = max(0, cantidad_necesaria - reservas_existentes)
+                    
+                    if cantidad_faltante > 0:
+                        print(f"  Completando reserva para {materia.nombre}: faltan {cantidad_faltante} unidades")
+                        
+                        lotes_mp = LoteMateriaPrima.objects.filter(
+                            id_materia_prima=materia,
+                            id_estado_lote_materia_prima=estado_disponible_mp
+                        ).order_by('fecha_vencimiento')
+
+                        cantidad_a_reservar = cantidad_faltante
+
+                        for lote in lotes_mp:
+                            if cantidad_a_reservar <= 0: 
+                                break
+                            
+                            disponible_lote = lote.cantidad_disponible
+                            if disponible_lote <= 0:
+                                continue
+                                
+                            cantidad_reservada = min(disponible_lote, cantidad_a_reservar)
+                            
+                            # Crear nueva reserva para completar lo faltante
+                            ReservaMateriaPrima.objects.create(
+                                id_orden_produccion=orden,
+                                id_lote_materia_prima=lote,
+                                cantidad_reservada=cantidad_reservada,
+                                id_estado_reserva_materia=estado_activa_reserva
+                            )
+                            
+                            cantidad_a_reservar -= cantidad_reservada
+                            reservas_creadas += 1
+                            print(f"    → Reservados {cantidad_reservada} de {materia.nombre} (Lote: {lote.id_lote_materia_prima})")
                 
                 # Cambiar estado de la orden
                 orden.id_estado_orden_produccion = estado_pendiente
                 orden.save()
                 
-                # Descontar stock (lógica FIFO)
-                for ingrediente in ingredientes:
-                    materia = ingrediente.id_materia_prima
-                    cantidad_a_descontar = ingrediente.cantidad * orden.cantidad
-                    
-                    lotes_mp = LoteMateriaPrima.objects.filter(
-                        id_materia_prima=materia,
-                        id_estado_lote_materia_prima=estado_disponible_mp
-                    ).order_by('fecha_vencimiento')
+                print(f"✅ Orden #{orden.id_orden_produccion} actualizada a 'Pendiente de inicio'. Reservas creadas: {reservas_creadas}")
 
-                    for lote in lotes_mp:
-                        if cantidad_a_descontar <= 0: break
-                        
-                        cantidad_tomada = min(lote.cantidad, cantidad_a_descontar)
-                        
-                        LoteProduccionMateria.objects.create(
-                            id_lote_produccion=orden.id_lote_produccion,
-                            id_lote_materia_prima=lote,
-                            cantidad_usada=cantidad_tomada
-                        )
-                        
-                        lote.cantidad -= cantidad_tomada
-                        lote.save()
-                        
-                        cantidad_a_descontar -= cantidad_tomada
-                
-                print(f"Orden #{orden.id_orden_produccion} actualizada a 'Pendiente de inicio' y stock descontado.")
+            else:
+                print(f"❌ Stock insuficiente para completar la Orden #{orden.id_orden_produccion}. Permanece en espera.")
 
         except Receta.DoesNotExist:
             print(f"Advertencia: La orden #{orden.id_orden_produccion} no tiene receta asociada. Se omite.")
