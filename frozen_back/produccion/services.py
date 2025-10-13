@@ -108,8 +108,8 @@ def gestionar_reservas_para_orden_produccion(orden):
     Orquesta la reserva de materias primas para una orden de producción.
     """
 
-    estado_activa, _ = EstadoReservaMateria.objects.get_or_create(descripcion="Activa")
-    estado_cancelada, _ = EstadoReservaMateria.objects.get_or_create(descripcion="Cancelada")
+    estado_activa = EstadoReservaMateria.objects.get_or_create(descripcion="Activa")
+    estado_cancelada = EstadoReservaMateria.objects.get_or_create(descripcion="Cancelada")
 
     # Cancelar reservas anteriores activas
     ReservaMateriaPrima.objects.filter(
