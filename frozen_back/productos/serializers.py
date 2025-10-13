@@ -28,5 +28,14 @@ class ProductoSerializer(serializers.ModelSerializer):
             'id_tipo_producto',
             'id_unidad',
             'tipo_producto',
-            'unidad'
+            'unidad',
+            'umbral_minimo'
         ]
+
+
+class ProductoLiteSerializer(serializers.ModelSerializer):
+    unidad_medida = serializers.CharField(source="id_unidad.descripcion")
+
+    class Meta:
+        model = Producto
+        fields = ["id_producto", "nombre", "descripcion", "unidad_medida", "umbral_minimo"]

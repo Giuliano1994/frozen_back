@@ -53,6 +53,7 @@ def login(request):
         return JsonResponse({"error": "Credenciales inválidas"}, status=401)
 
     dto = LoginResponseDTO(
+        id_empleado=empleado.id_empleado,
         nombre=empleado.nombre,
         apellido=empleado.apellido,
         rol=empleado.id_rol.descripcion,

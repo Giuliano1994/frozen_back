@@ -1,5 +1,6 @@
 class LoginResponseDTO:
-    def __init__(self, nombre, apellido, rol, vector):
+    def __init__(self, nombre, apellido, rol, vector, id_empleado):
+        self.id_empleado = id_empleado
         self.nombre = nombre
         self.apellido = apellido
         self.rol = rol
@@ -7,6 +8,7 @@ class LoginResponseDTO:
 
     def to_dict(self):
         return {
+            "id_empleado": self.id_empleado,
             "nombre": self.nombre,
             "apellido": self.apellido,
             "rol": self.rol,

@@ -27,6 +27,9 @@ DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
 
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",]
+
 # CORS settings --> despues lo vamos a cambiar para que solo acepte el que corresponde al front demomento permitimos todo
 CORS_ALLOW_ALL_ORIGINS = True
 
@@ -39,11 +42,16 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_filters',
     'login',
     'empleados',
     'productos',
     'ventas',
-    'corsheaders'
+    'corsheaders',
+    'materias_primas',
+    'produccion',
+    'stock',
+    'recetas'
 ]
 
 MIDDLEWARE = [
@@ -133,3 +141,43 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+
+REST_FRAMEWORK = {
+    'DEFAULT_FILTER_BACKENDS': [
+        'django_filters.rest_framework.DjangoFilterBackend',
+        'rest_framework.filters.SearchFilter',
+        'rest_framework.filters.OrderingFilter',
+    ],
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 10,  # número de resultados por página
+}
+
+
+
+# Configuración del servidor SMTP para enviar correos
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'enviador.de.mail.automatico@gmail.com'
+EMAIL_HOST_PASSWORD = 'uaxk pbju aetw zfnh'
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+
+#Datos estaticos de la empresa
+EMPRESA_NOMBRE = 'Frozen SA'
+EMPRESA_CUIT = '20-544322334-1'
+EMPRESA_DIRECCION = 'Direccion Falsa 1234'
+EMPRESA_TELEFONO = '1169148628'
+EMPRESA_MAIL = 'frozensa@gmail.com'
+
+
+
+import os
+TELEGRAM_BOT_TOKEN = "8145316419:AAG9g5LIdUYLsdsdFIebXQ40hvqwHF7iSXk"
+TELEGRAM_CHAT_ID = -1003144629342

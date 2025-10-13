@@ -11,6 +11,7 @@ router.register(r'roles', views.RolViewSet)
 router.register(r'fichadas', views.FichadaViewSet)
 router.register(r'permisos', views.PermisoViewSet)
 router.register(r'rol-permisos', views.RolPermisoViewSet)
+router.register(r'empleados-filter', views.EmpleadoViewSet)
 
 urlpatterns = [
     # endpoints custom para empleados
