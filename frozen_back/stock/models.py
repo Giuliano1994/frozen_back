@@ -57,9 +57,9 @@ class LoteMateriaPrima(models.Model):
         """Calcula la cantidad total reservada para este lote sumando las reservas."""
         # Suma todas las 'cantidad_reservada' de los registros de ReservaStock
         # que apuntan a este lote (self).
-        total_reservado = self.reservas.aggregate(
-            total=models.Sum('cantidad_reservada')
-        )['total']
+        total_reservado = self.reservas.filter(
+            id_estado_reserva_materia__descripcion__in=["Activa"]
+        ).aggregate(total=models.Sum('cantidad_reservada'))['total']
         return total_reservado or 0
 
     @property
