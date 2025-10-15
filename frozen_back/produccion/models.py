@@ -11,10 +11,18 @@ class EstadoOrdenProduccion(models.Model):
     class Meta:
         db_table = "estado_orden_produccion"
 
+class estado_linea_produccion(models.Model):
+    id_estado_linea_produccion = models.AutoField(primary_key=True)
+    descripcion = models.CharField(max_length=50)
+
+    class Meta:
+        db_table = "estado_linea_produccion"
+
 
 class LineaProduccion(models.Model):
     id_linea_produccion = models.AutoField(primary_key=True)
     descripcion = models.CharField(max_length=100)
+    id_estado_linea_produccion = models.ForeignKey(estado_linea_produccion, on_delete=models.CASCADE, db_column="id_estado_linea_produccion")
 
     class Meta:
         db_table = "linea_produccion"
