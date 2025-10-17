@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import api_view  # <- IMPORT IMPORTANTE
 from django_filters.rest_framework import DjangoFilterBackend
-from stock.services import get_stock_disponible_para_producto,  verificar_stock_y_enviar_alerta
+from stock.services import get_stock_disponible_para_producto,  verificar_stock_y_enviar_alerta, get_stock_disponible_todos_los_productos
 from django.views.decorators.csrf import csrf_exempt
 from produccion.services import procesar_ordenes_en_espera
 from django.db.models import Sum
@@ -94,6 +94,21 @@ def cantidad_total_producto_view(request, id_producto):
         {"id_producto": id_producto, "cantidad_disponible": total},
         status=status.HTTP_200_OK
     )
+
+
+@api_view(["GET"])
+def lista_cantidad_total_productos_view(request):
+    """
+    Endpoint que devuelve la cantidad total disponible de TODOS los productos.
+    """
+    # 1. Llamamos a la nueva función helper
+    stock_data = get_stock_disponible_todos_los_productos()
+    
+    # 2. La función ya devuelve un QuerySet de diccionarios, 
+    #    listo para ser serializado por la Response.
+    return Response(stock_data, status=status.HTTP_200_OK)
+
+
 
 @api_view(["GET"])
 def cantidad_total_materia_view(request, id_producto):

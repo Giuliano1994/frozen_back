@@ -26,6 +26,53 @@ def cantidad_total_producto(id_producto):
 
 
 
+def get_stock_disponible_todos_los_productos():
+    """
+    Devuelve un QuerySet con la cantidad total DISPONIBLE de cada producto.
+    Calcula el stock basándose en lotes 'Disponibles' y reservas 'Activas'.
+    """
+    
+    # 1. Filtro para sumar solo la cantidad de lotes 'Disponibles'
+    filtro_lotes_disponibles = Q(
+        loteproduccion__id_estado_lote_produccion__descripcion="Disponible"
+    )
+    
+    # 2. Filtro para sumar solo la cantidad reservada de reservas 'Activas'
+    #    que pertenezcan a lotes 'Disponibles'.
+    filtro_reservas_activas = (
+        Q(loteproduccion__id_estado_lote_produccion__descripcion="Disponible") &
+        Q(loteproduccion__reservas__id_estado_reserva__descripcion='Activa')
+    )
+
+    # 3. Consultamos desde Producto y anotamos los totales
+    productos_con_stock = Producto.objects.annotate(
+        # Suma total de 'cantidad' de todos sus lotes 'Disponibles'
+        total_producido=Coalesce(
+            Sum('loteproduccion__cantidad', filter=filtro_lotes_disponibles), 
+            0
+        ),
+        # Suma total de 'cantidad_reservada' de sus reservas 'Activas'
+        total_reservado=Coalesce(
+            Sum('loteproduccion__reservas__cantidad_reservada', filter=filtro_reservas_activas), 
+            0
+        )
+    ).annotate(
+        # 4. Calculamos el disponible final para cada producto
+        cantidad_disponible=F('total_producido') - F('total_reservado')
+    )
+
+    # 5. Devolvemos los campos que nos interesan
+    #    (Añado 'nombre' porque es muy útil y no tiene costo de rendimiento aquí)
+    return productos_con_stock.values(
+        'id_producto', 
+        'nombre', 
+        'cantidad_disponible',
+        'umbral_minimo',
+        'descripcion'
+    ).order_by('id_producto')
+
+
+
 def get_stock_disponible_para_producto(id_producto):
     """
     Devuelve la cantidad total DISPONIBLE de un producto.
@@ -55,6 +102,8 @@ def get_stock_disponible_para_producto(id_producto):
     total_disponible = resultado_agregado.get('total') or 0
 
     return total_disponible
+
+
 
 # --- NUEVA FUNCIÓN REUTILIZABLE ---
 def verificar_stock_para_orden_venta(orden_venta):

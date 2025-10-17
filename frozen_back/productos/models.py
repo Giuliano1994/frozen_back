@@ -29,3 +29,31 @@ class Producto(models.Model):
     class Meta:
         db_table = "producto"
 
+
+
+
+# Modelo para almacenar imágenes de productos en formato Base64
+class ImagenProducto(models.Model):
+    id_imagen_producto = models.AutoField(primary_key=True)
+    
+    # Llave foránea para relacionar con el Producto
+    id_producto = models.ForeignKey(
+        Producto, 
+        on_delete=models.CASCADE, 
+        db_column="id_producto",
+        related_name="imagenes"  # Esto te permite acceder como: mi_producto.imagenes.all()
+    )
+    
+    # Campo para guardar la imagen en formato Base64
+    imagen_base64 = models.TextField(
+        null=True, 
+        blank=True,
+        help_text="Contenido de la imagen codificado en Base64"
+    )
+
+    class Meta:
+        db_table = "imagen_producto"
+
+    def __str__(self):
+        # Es útil para ver un nombre legible en el admin de Django
+        return f"Imagen de {self.id_producto.nombre} ({self.id_imagen_producto})"
