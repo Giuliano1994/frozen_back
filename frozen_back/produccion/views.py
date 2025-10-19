@@ -440,6 +440,11 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
                         {'error': 'Estado de lote "En espera" no encontrado'},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
                     )
+        elif estado_descripcion == 'en proceso':
+            # Registrar la hora de inicio de la producción
+            from django.utils import timezone
+            orden.fecha_inicio = timezone.now()
+            orden.save()
 
         # --- 🔹 OTROS ESTADOS ---
         else:
