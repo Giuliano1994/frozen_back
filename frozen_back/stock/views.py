@@ -52,6 +52,12 @@ class LoteProduccionViewSet(viewsets.ModelViewSet):
     search_fields = ["id_producto__nombre"]
     filterset_fields = ["id_producto", "id_estado_lote_produccion", "fecha_produccion", "fecha_vencimiento"]
 
+@api_view(["GET"])
+def obtener_lotes_de_materia_prima(request, id_materia_prima):
+    lotes = LoteMateriaPrima.objects.filter(id_materia_prima=id_materia_prima)
+    serializer = LoteMateriaPrimaSerializer(lotes, many=True)
+    return Response(serializer.data)
+
 class LoteMateriaPrimaViewSet(viewsets.ModelViewSet):
     queryset = LoteMateriaPrima.objects.all()
     serializer_class = LoteMateriaPrimaSerializer

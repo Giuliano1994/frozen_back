@@ -11,7 +11,8 @@ from .views import (
     listar_materias_primas,
     restar_cantidad_lote,
     verificar_stock_view,
-    lista_cantidad_total_productos_view
+    lista_cantidad_total_productos_view,
+    obtener_lotes_de_materia_prima
 )
 
 router = DefaultRouter()
@@ -30,4 +31,5 @@ urlpatterns = [
     path("materias_primas/agregar/", agregar_o_crear_lote, name="agregar_o_crear_lote"),
     path("materias_primas/restar/", restar_cantidad_lote, name="restar_cantidad_lote"),
     path('materiasprimas/', listar_materias_primas, name='listar_materias_primas'),
+    path('lotes-materias/por-materia/<int:id_materia_prima>/', obtener_lotes_de_materia_prima, name='obtener_lotes_de_materia_prima'),
 ]
