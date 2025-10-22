@@ -270,6 +270,7 @@ def listar_materias_primas(request):
             "id_materia_prima": materia.id_materia_prima,
             "nombre": materia.nombre,
             "unidad_medida": materia.id_unidad.descripcion,
+            "umbral_minimo": materia.umbral_minimo,
             "cantidad_disponible": max(cantidad_disponible_total, 0)  # Evitamos valores negativos
         })
 

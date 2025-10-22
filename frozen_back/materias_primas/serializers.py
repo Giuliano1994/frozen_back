@@ -19,7 +19,7 @@ class MateriaPrimaSerializer(serializers.ModelSerializer):
         model = MateriaPrima
         fields = [
             "id_materia_prima", "nombre", "descripcion", "precio",
-            "id_tipo_materia_prima", "tipo_descripcion", "id_unidad","id_proveedor"
+            "id_tipo_materia_prima", "tipo_descripcion", "id_unidad","id_proveedor", "umbral_minimo"
         ]
         
 class proveedorSerializer(serializers.ModelSerializer):
