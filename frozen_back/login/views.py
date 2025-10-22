@@ -6,6 +6,7 @@ from django.views.decorators.csrf import csrf_exempt
 from .utils import buscar_empleado_por_vector_facial , registrar_fichada, obtener_info_empleado
 from empleados.models import Empleado , Fichada , FaceID
 from .dtos import LoginResponseDTO , FichajeResponseDTO
+from ventas.models import Cliente
 
 
 @csrf_exempt
@@ -61,3 +62,30 @@ def login(request):
     )
 
     return JsonResponse(dto.to_dict())
+
+
+@csrf_exempt
+def login_ecommerce(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Método no permitido"}, status=405)
+    
+    data = json.loads(request.body)
+    email = data.get("email")
+    password = data.get("password")
+
+    if not email or not password:
+        return JsonResponse({"error": "email y contraseña requeridos"}, status=400)
+
+    try:
+        cliente = Cliente.objects.get(
+            email=email, contraseña=password
+        )
+    except Cliente.DoesNotExist:
+        return JsonResponse({"error": "Credenciales inválidas"}, status=401)
+
+    clienteEncontrado = {
+        "email": cliente.email,
+        "contraseña": cliente.contraseña
+    }
+
+    return JsonResponse(clienteEncontrado, status = 200)
