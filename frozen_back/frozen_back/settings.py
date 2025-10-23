@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     'compras',
     'trazabilidad',
     'despachos',
+    'drf_spectacular',
 ]
 
 MIDDLEWARE = [
@@ -158,6 +159,8 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,  # número de resultados por página
+
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
 

@@ -36,3 +36,17 @@ class ordenCompraSerializer(serializers.ModelSerializer):
     class Meta:
         model = OrdenCompra
         fields = '__all__'  # incluye todos los campos de OrdenCompra + materias_primas
+
+
+
+class OrdenCompraProduccionSerializer(serializers.ModelSerializer): # <--- Nombre corregido
+    orden_produccion_detalle = serializers.CharField(source='id_orden_produccion.detalle', read_only=True)
+
+    class Meta:
+        model = OrdenCompraProduccion
+        fields = [
+            'id_orden_compra_produccion',
+            'id_orden_compra',
+            'id_orden_produccion',
+            'orden_produccion_detalle'
+        ]

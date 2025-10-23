@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import EstadoVenta, Cliente, OrdenVenta, OrdenVentaProducto, Prioridad, Reclamo, Sugerencia
+from .models import EstadoVenta, Cliente, OrdenVenta, OrdenVentaProducto, Prioridad, Reclamo, Sugerencia, NotaCredito
 from productos.serializers import ProductoSerializer
 from productos.models import Producto
 from empleados.models import Empleado
@@ -146,3 +146,23 @@ class OrdenVentaSerializer(serializers.ModelSerializer):
     
 
 
+
+class NotaCreditoSerializer(serializers.ModelSerializer):
+    """
+    Serializer para el modelo NotaCredito.
+    """
+    # Opcional: mostrar más info de la factura
+    factura_detalle = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = NotaCredito
+        fields = '__all__' # O especifica los campos: ['id_nota_credito', 'id_factura', 'fecha', 'motivo', 'factura_detalle']
+        read_only_fields = ['fecha']
+
+    def get_factura_detalle(self, obj):
+        # Devuelve info útil de la factura y la orden
+        return {
+            "id_factura": obj.id_factura.id_factura,
+            "id_orden_venta": obj.id_factura.id_orden_venta.id_orden_venta,
+            "fecha_orden": obj.id_factura.id_orden_venta.fecha
+        }

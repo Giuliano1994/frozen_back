@@ -11,6 +11,7 @@ router.register(r'ordenes-venta', OrdenVentaViewSet)
 router.register(r'ordenes-productos', OrdenVentaProductoViewSet)
 router.register(r'reclamos', ReclamoViewSet)
 router.register(r'sugerencias', SugerenciaViewSet)
+router.register(r'notas-credito', views.NotaCreditoViewSet)
 
 urlpatterns = [
     path('ordenes-venta/<int:orden_id>/detalle/', detalle_orden_venta, name='detalle_orden_venta'),
