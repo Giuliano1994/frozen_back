@@ -92,3 +92,33 @@ class LoteProduccionMateriaSerializer(serializers.ModelSerializer):
     class Meta:
         model = LoteProduccionMateria
         fields = "__all__"
+
+
+
+class HistoricalLoteProduccionSerializer(serializers.ModelSerializer):
+    history_user_nombre = serializers.CharField(source='history_user.usuario', read_only=True)
+    producto_nombre = serializers.CharField(source='id_producto.nombre', read_only=True)
+    estado_lote = serializers.CharField(source='id_estado_lote_produccion.descripcion', read_only=True)
+
+    class Meta:
+        model = LoteProduccion.history.model
+        fields = [
+            'history_id', 'history_date', 'history_type', 'history_user_nombre',
+            'id_lote_produccion', 'id_producto', 'producto_nombre',
+            'id_estado_lote_produccion', 'estado_lote',
+            'cantidad', 'fecha_produccion', 'fecha_vencimiento'
+        ]
+
+class HistoricalLoteMateriaPrimaSerializer(serializers.ModelSerializer):
+    history_user_nombre = serializers.CharField(source='history_user.usuario', read_only=True)
+    materia_prima_nombre = serializers.CharField(source='id_materia_prima.nombre', read_only=True)
+    estado_lote = serializers.CharField(source='id_estado_lote_materia_prima.descripcion', read_only=True)
+
+    class Meta:
+        model = LoteMateriaPrima.history.model
+        fields = [
+            'history_id', 'history_date', 'history_type', 'history_user_nombre',
+            'id_lote_materia_prima', 'id_materia_prima', 'materia_prima_nombre',
+            'id_estado_lote_materia_prima', 'estado_lote',
+            'cantidad', 'fecha_vencimiento'
+        ]

@@ -1,11 +1,11 @@
 from django.shortcuts import render
-from rest_framework import viewsets
+from rest_framework import viewsets, filters
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from .models import OrdenDespacho
-
+from django_filters.rest_framework import DjangoFilterBackend
 from .models import EstadoDespacho, Repartidor, OrdenDespacho, DespachoOrenVenta
-from .serializers import CrearOrdenDespachoSerializer, EstadoDespachoSerializer, RepartidorSerializer, OrdenDespachoSerializer, DespachoOrdenVentaSerializer
+from .serializers import CrearOrdenDespachoSerializer, EstadoDespachoSerializer, RepartidorSerializer, OrdenDespachoSerializer, DespachoOrdenVentaSerializer, HistoricalOrdenDespachoSerializer
 
 class estadoDespachoViewSet(viewsets.ModelViewSet):
     queryset = EstadoDespacho.objects.all()
@@ -38,3 +38,16 @@ class OrdenDespachoViewSet(viewsets.ViewSet):
         despacho = serializer.save()
         response_serializer = OrdenDespachoSerializer(despacho)
         return Response(response_serializer.data, status=201)
+    
+
+
+
+class HistorialOrdenDespachoViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint para ver el historial de cambios de las Órdenes de Despacho.
+    """
+    queryset = OrdenDespacho.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalOrdenDespachoSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_estado_despacho', 'id_repartidor']
+    search_fields = ['history_user__usuario', 'id_repartidor__nombre']

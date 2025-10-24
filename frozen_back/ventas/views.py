@@ -25,7 +25,9 @@ from .serializers import (
     PrioridadSerializer,
     ReclamoSerializer,
     SugerenciaSerializer,
-    NotaCreditoSerializer
+    NotaCreditoSerializer,
+    HistoricalOrdenVentaSerializer, 
+    HistoricalNotaCreditoSerializer
 )
 
 class EstadoVentaViewSet(viewsets.ModelViewSet):
@@ -670,3 +672,26 @@ class NotaCreditoViewSet(viewsets.ModelViewSet):
         except Exception as e:
             # Captura errores del servicio (ej. "Ya existe NC", "Orden no pagada")
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        
+
+
+
+class HistorialOrdenVentaViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet de solo-lectura para ver el log global de todas las Órdenes de Venta.
+    """
+    queryset = OrdenVenta.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalOrdenVentaSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_estado_venta', 'id_cliente']
+    search_fields = ['history_user__usuario', 'id_cliente__nombre']
+
+class HistorialNotaCreditoViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet de solo-lectura para ver el log global de todas las Notas de Crédito.
+    """
+    queryset = NotaCredito.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalNotaCreditoSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_factura']
+    search_fields = ['history_user__usuario', 'motivo']

@@ -13,7 +13,8 @@ from .serializers import (
     LineaProduccionSerializer,
     OrdenProduccionSerializer,
     OrdenProduccionUpdateEstadoSerializer,
-    NoConformidadSerializer
+    NoConformidadSerializer,
+    HistoricalOrdenProduccionSerializer
 )
 from .filters import OrdenProduccionFilter
 from django.utils import timezone
@@ -270,3 +271,16 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
 class NoConformidadViewSet(viewsets.ModelViewSet):
     queryset = NoConformidad.objects.all().select_related("id_orden_produccion")
     serializer_class = NoConformidadSerializer
+
+
+
+
+class HistorialOrdenProduccionViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint para ver el historial de cambios de las Órdenes de Producción.
+    """
+    queryset = OrdenProduccion.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalOrdenProduccionSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_estado_orden_produccion', 'id_producto', 'id_supervisor', 'id_operario']
+    search_fields = ['history_user__usuario', 'id_producto__nombre']

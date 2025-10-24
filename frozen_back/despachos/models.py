@@ -1,4 +1,5 @@
 from django.db import models
+from simple_history.models import HistoricalRecords
 
 class EstadoDespacho(models.Model):
     id_estado_despacho = models.AutoField(primary_key=True)
@@ -21,6 +22,7 @@ class OrdenDespacho(models.Model):
     fecha_despacho = models.DateTimeField(auto_now_add=True)
     id_repartidor = models.ForeignKey(Repartidor, on_delete=models.SET_NULL, null=True, blank=True, db_column="id_repartidor")
 
+    history = HistoricalRecords()
     class Meta:
         db_table = "orden_despacho"
 

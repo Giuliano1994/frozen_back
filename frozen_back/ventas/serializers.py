@@ -166,3 +166,28 @@ class NotaCreditoSerializer(serializers.ModelSerializer):
             "id_orden_venta": obj.id_factura.id_orden_venta.id_orden_venta,
             "fecha_orden": obj.id_factura.id_orden_venta.fecha
         }
+    
+
+class HistoricalOrdenVentaSerializer(serializers.ModelSerializer):
+    history_user_nombre = serializers.CharField(source='history_user.usuario', read_only=True)
+    estado_venta = serializers.CharField(source='id_estado_venta.descripcion', read_only=True)
+    cliente_nombre = serializers.CharField(source='id_cliente.nombre', read_only=True)
+    
+    class Meta:
+        model = OrdenVenta.history.model
+        fields = [
+            'history_id', 'history_date', 'history_type', 'history_user_nombre',
+            'id_estado_venta', 'estado_venta', 'id_cliente', 'cliente_nombre', 'id_prioridad'
+        ]
+
+
+# (Nuevo Serializer para Historial de NotaCredito)
+class HistoricalNotaCreditoSerializer(serializers.ModelSerializer):
+    history_user_nombre = serializers.CharField(source='history_user.usuario', read_only=True)
+
+    class Meta:
+        model = NotaCredito.history.model
+        fields = [
+            'history_id', 'history_date', 'history_type', 'history_user_nombre',
+            'id_factura', 'motivo'
+        ]

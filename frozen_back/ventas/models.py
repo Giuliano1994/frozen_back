@@ -1,6 +1,6 @@
 from django.db import models
 from productos.models import Producto
-
+from simple_history.models import HistoricalRecords
 
 
 class Prioridad(models.Model):
@@ -135,6 +135,7 @@ class OrdenVenta(models.Model):
         null=True, 
         blank=True
     )
+    history = HistoricalRecords()
 
     class Meta:
         db_table = "orden_venta"
@@ -179,6 +180,7 @@ class NotaCredito(models.Model):
     fecha = models.DateTimeField(auto_now_add=True, verbose_name="Fecha de Creación")
     motivo = models.TextField(blank=True, null=True, help_text="Razón de la nota de crédito (ej. Devolución)")
 
+    history = HistoricalRecords()
     class Meta:
         db_table = "nota_credito"
 
