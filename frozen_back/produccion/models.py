@@ -1,5 +1,5 @@
 from django.db import models
-
+from simple_history.models import HistoricalRecords
 from productos.models import Producto
 from empleados.models import Empleado
 from stock.models import LoteProduccion
@@ -62,6 +62,7 @@ class OrdenProduccion(models.Model):
         OrdenVenta, on_delete=models.SET_NULL, blank=True, null=True, db_column="id_orden_venta"
     )
 
+    history = HistoricalRecords()
     class Meta:
         db_table = "orden_produccion"
 

@@ -11,8 +11,8 @@ from empleados.models import Empleado
 from stock.models import LoteProduccion  # según tu estructura
 from django.db import models
 from rest_framework import status
-from .services import gestionar_stock_y_estado_para_orden_venta, cancelar_orden_venta, facturar_orden_y_descontar_stock,  revisar_ordenes_de_venta_pendientes
-from .models import Factura, OrdenVenta, Reclamo, Sugerencia
+from .services import gestionar_stock_y_estado_para_orden_venta, cancelar_orden_venta, facturar_orden_y_descontar_stock,  revisar_ordenes_de_venta_pendientes, crear_nota_credito_y_devolver_stock
+from .models import Factura, OrdenVenta, Reclamo, Sugerencia, NotaCredito
 from django.db import transaction
 from .filters import OrdenVentaFilter
 
@@ -25,6 +25,9 @@ from .serializers import (
     PrioridadSerializer,
     ReclamoSerializer,
     SugerenciaSerializer,
+    NotaCreditoSerializer,
+    HistoricalOrdenVentaSerializer, 
+    HistoricalNotaCreditoSerializer
 )
 
 class EstadoVentaViewSet(viewsets.ModelViewSet):
@@ -632,3 +635,63 @@ def cambiar_estado_orden_venta(request):
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 """
+
+
+class NotaCreditoViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para crear y ver Notas de Crédito.
+    La creación de una NC dispara la devolución de stock.
+    """
+    queryset = NotaCredito.objects.all().order_by('-fecha')
+    serializer_class = NotaCreditoSerializer
+
+    def create(self, request, *args, **kwargs):
+        """
+        Sobre-escribe el método POST para crear una NC.
+        Espera: { "id_factura": <id>, "motivo": "<texto>" }
+        """
+        id_factura = request.data.get('id_factura')
+        motivo = request.data.get('motivo')
+
+        if not id_factura:
+            return Response({"error": "El campo 'id_factura' es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            factura = Factura.objects.get(pk=id_factura)
+            orden_venta = factura.id_orden_venta
+            
+            # Llamamos al servicio que hace toda la magia
+            nota_credito = crear_nota_credito_y_devolver_stock(orden_venta, motivo)
+            
+            # Devolvemos la NC creada
+            serializer = self.get_serializer(nota_credito)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        except (Factura.DoesNotExist, OrdenVenta.DoesNotExist):
+            return Response({"error": "La factura o la orden de venta asociada no existen."}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            # Captura errores del servicio (ej. "Ya existe NC", "Orden no pagada")
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        
+
+
+
+class HistorialOrdenVentaViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet de solo-lectura para ver el log global de todas las Órdenes de Venta.
+    """
+    queryset = OrdenVenta.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalOrdenVentaSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_estado_venta', 'id_cliente']
+    search_fields = ['history_user__usuario', 'id_cliente__nombre']
+
+class HistorialNotaCreditoViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet de solo-lectura para ver el log global de todas las Notas de Crédito.
+    """
+    queryset = NotaCredito.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalNotaCreditoSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_factura']
+    search_fields = ['history_user__usuario', 'motivo']

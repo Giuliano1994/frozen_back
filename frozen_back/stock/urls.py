@@ -12,7 +12,9 @@ from .views import (
     restar_cantidad_lote,
     verificar_stock_view,
     lista_cantidad_total_productos_view,
-    obtener_lotes_de_materia_prima
+    obtener_lotes_de_materia_prima,
+    HistorialLoteProduccionViewSet,
+    HistorialLoteMateriaPrimaViewSet
 )
 
 router = DefaultRouter()
@@ -22,6 +24,8 @@ router.register(r'lotes-produccion', LoteProduccionViewSet)
 router.register(r'lotes-materias', LoteMateriaPrimaViewSet)
 router.register(r'lotes-produccion-materias', LoteProduccionMateriaViewSet)
 router.register(r'cantidad-disponible-producto', LoteProduccionViewSet, basename='cantidad-disponible-producto')
+router.register(r'historial-lotes-produccion', HistorialLoteProduccionViewSet, basename='historial-loteproduccion')
+router.register(r'historial-lotes-materia-prima', HistorialLoteMateriaPrimaViewSet, basename='historial-lotemateriaprima')
 
 urlpatterns = [
     path('', include(router.urls)),

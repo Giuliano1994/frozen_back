@@ -9,7 +9,7 @@ from compras.models import (
     EstadoOrdenCompra, OrdenCompra, OrdenCompraProduccion, OrdenCompraMateriaPrima
 )
 from compras.serializers import (
-    estadoOrdenCompraSerializer, ordenCompraProduccionSerializer, ordenCompraSerializer
+    estadoOrdenCompraSerializer, OrdenCompraProduccionSerializer, ordenCompraSerializer, OrdenCompraMateriaPrimaSerializer, HistoricalOrdenCompraSerializer
 )
 from produccion.services import procesar_ordenes_en_espera
 from materias_primas.models import Proveedor
@@ -176,14 +176,42 @@ class estadoOrdenCompraViewSet(viewsets.ModelViewSet):
 
 class orden_compra_produccionViewSet(viewsets.ModelViewSet):
     queryset = OrdenCompraProduccion.objects.all()
-    serializer_class = ordenCompraProduccionSerializer
+    serializer_class = OrdenCompraProduccionSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["id_orden_compra", "id_orden_produccion"]
     search_fields = ["id_orden_compra__numero_orden", "id_orden_produccion__codigo"]
 
+"""
 class orden_compra_materia_primaViewSet(viewsets.ModelViewSet):
     queryset = OrdenCompraProduccion.objects.all()
     serializer_class = ordenCompraProduccionSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["id_orden_compra", "id_materia_prima"]
     search_fields = ["id_orden_compra__numero_orden", "id_materia_prima__nombre"]
+"""
+
+
+# --- 2. CORREGIR ESTE VIEWSET COMPLETAMENTE ---
+class orden_compra_materia_primaViewSet(viewsets.ModelViewSet):
+    # Apuntar al modelo correcto
+    queryset = OrdenCompraMateriaPrima.objects.all() 
+    # Apuntar al serializador correcto (con mayúsculas)
+    serializer_class = OrdenCompraMateriaPrimaSerializer 
+    
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    
+    # Estos campos AHORA SÍ son correctos porque el queryset apunta a OrdenCompraMateriaPrima
+    filterset_fields = ["id_orden_compra", "id_materia_prima"] 
+    search_fields = ["id_orden_compra__numero_orden", "id_materia_prima__nombre"]
+
+
+
+class HistorialOrdenCompraViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint para ver el historial de cambios de las Órdenes de Compra.
+    """
+    queryset = OrdenCompra.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalOrdenCompraSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_estado_orden_compra', 'id_proveedor']
+    search_fields = ['history_user__usuario', 'id_proveedor__nombre']

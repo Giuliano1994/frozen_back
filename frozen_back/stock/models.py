@@ -1,6 +1,7 @@
 from django.db import models
 from productos.models import Producto
 from materias_primas.models import MateriaPrima
+from simple_history.models import HistoricalRecords
 
 class EstadoLoteProduccion(models.Model):
     id_estado_lote_produccion = models.AutoField(primary_key=True)
@@ -41,6 +42,7 @@ class LoteProduccion(models.Model):
     
     id_estado_lote_produccion = models.ForeignKey(EstadoLoteProduccion, on_delete=models.CASCADE, db_column="id_estado_lote_produccion")
 
+    history = HistoricalRecords()
     class Meta:
         db_table = "lote_produccion"
 
@@ -67,6 +69,7 @@ class LoteMateriaPrima(models.Model):
         """Calcula la cantidad real disponible para nuevas reservas."""
         return self.cantidad - self.cantidad_reservada
 
+    history = HistoricalRecords()
     class Meta:
         db_table = "lote_materia_prima"
 

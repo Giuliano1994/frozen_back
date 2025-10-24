@@ -1,6 +1,6 @@
 from django.db import models
 from productos.models import Producto
-
+from simple_history.models import HistoricalRecords
 
 
 class Prioridad(models.Model):
@@ -135,6 +135,7 @@ class OrdenVenta(models.Model):
         null=True, 
         blank=True
     )
+    history = HistoricalRecords()
 
     class Meta:
         db_table = "orden_venta"
@@ -159,3 +160,29 @@ class Factura(models.Model):
 
     class Meta:
         db_table = "factura"
+
+
+
+
+class NotaCredito(models.Model):
+    """
+    Representa una nota de crédito que anula (total o parcialmente) una factura
+    y revierte la operación de stock.
+    """
+    id_nota_credito = models.AutoField(primary_key=True)
+    # Se vincula a la factura, que a su vez tiene la orden de venta
+    id_factura = models.OneToOneField(
+        Factura, 
+        on_delete=models.CASCADE, 
+        db_column="id_factura",
+        help_text="Factura que esta nota de crédito anula."
+    )
+    fecha = models.DateTimeField(auto_now_add=True, verbose_name="Fecha de Creación")
+    motivo = models.TextField(blank=True, null=True, help_text="Razón de la nota de crédito (ej. Devolución)")
+
+    history = HistoricalRecords()
+    class Meta:
+        db_table = "nota_credito"
+
+    def __str__(self):
+        return f"NC-{self.id_nota_credito} (Factura: {self.id_factura.id_factura})"

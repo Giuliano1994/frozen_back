@@ -1,5 +1,6 @@
 from django.db import models
 from produccion.models import OrdenProduccion
+from simple_history.models import HistoricalRecords
 
 class EstadoOrdenCompra(models.Model):
     id_estado_orden_compra = models.AutoField(primary_key=True)
@@ -16,6 +17,7 @@ class OrdenCompra(models.Model):
     fecha_entrega_estimada = models.DateField()
     fecha_entrega_real = models.DateField(blank=True, null=True)
 
+    history = HistoricalRecords()
     class Meta:
         db_table = "orden_compra"
 

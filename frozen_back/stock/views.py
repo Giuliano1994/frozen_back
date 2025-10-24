@@ -26,7 +26,9 @@ from .serializers import (
     EstadoLoteMateriaPrimaSerializer,
     LoteProduccionSerializer,
     LoteMateriaPrimaSerializer,
-    LoteProduccionMateriaSerializer
+    LoteProduccionMateriaSerializer,
+    HistoricalLoteProduccionSerializer, 
+    HistoricalLoteMateriaPrimaSerializer
 )
 
 # ----- Estados -----
@@ -275,3 +277,26 @@ def listar_materias_primas(request):
         })
 
     return JsonResponse(data, safe=False)
+
+
+
+
+class HistorialLoteProduccionViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint para ver el historial de cambios de los Lotes de Producción.
+    """
+    queryset = LoteProduccion.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalLoteProduccionSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_producto', 'id_estado_lote_produccion']
+    search_fields = ['history_user__usuario', 'id_producto__nombre']
+
+class HistorialLoteMateriaPrimaViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint para ver el historial de cambios de los Lotes de Materia Prima.
+    """
+    queryset = LoteMateriaPrima.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalLoteMateriaPrimaSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_materia_prima', 'id_estado_lote_materia_prima']
+    search_fields = ['history_user__usuario', 'id_materia_prima__nombre']

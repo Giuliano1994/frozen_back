@@ -1,5 +1,5 @@
 from django.db import transaction
-from .models import OrdenVentaProducto, EstadoVenta, OrdenVenta 
+from .models import OrdenVentaProducto, EstadoVenta, OrdenVenta, Factura, NotaCredito
 from stock.models import LoteProduccion, ReservaStock, EstadoLoteProduccion, EstadoReserva 
 from stock.services import get_stock_disponible_para_producto, verificar_stock_y_enviar_alerta
 from stock.models import ReservaStock
@@ -285,3 +285,90 @@ def revisar_ordenes_de_venta_pendientes(producto: Producto):
     for orden in ordenes_a_revisar:
         print(f"Re-evaluando Orden de Venta #{orden.pk}...")
         gestionar_stock_y_estado_para_orden_venta(orden)
+
+
+
+
+
+@transaction.atomic
+def crear_nota_credito_y_devolver_stock(orden_venta: OrdenVenta, motivo: str = None):
+    """
+    1. Crea una Nota de Crédito para la factura de la orden.
+    2. Encuentra las reservas 'Utilizadas' de esa orden.
+    3. Devuelve el stock físico (cantidad) a los lotes correspondientes.
+    4. Cambia el estado de los lotes a 'Disponible' si estaban 'Agotados'.
+    5. Cambia el estado de las reservas a 'Devolución NC'.
+    6. Cambia el estado de la orden a 'Devolución NC'.
+    7. Dispara la re-evaluación de stock para otras órdenes pendientes.
+    """
+    print(f"Iniciando creación de Nota de Crédito para Orden #{orden_venta.pk}...")
+
+    # 1. Validar estado de la orden y encontrar factura
+    estado_facturada, _ = EstadoVenta.objects.get_or_create(descripcion__iexact="Pagada")
+    if orden_venta.id_estado_venta != estado_facturada:
+        raise Exception(f"La orden #{orden_venta.pk} no está 'Pagada'. No se puede crear nota de crédito.")
+
+    try:
+        factura = Factura.objects.get(id_orden_venta=orden_venta)
+    except Factura.DoesNotExist:
+        raise Exception(f"No se encontró una factura para la orden #{orden_venta.pk}.")
+
+    # 2. Validar que no exista ya una NC
+    if NotaCredito.objects.filter(id_factura=factura).exists():
+        raise Exception(f"Ya existe una nota de crédito para la factura #{factura.pk}.")
+
+    # 3. Obtener estados necesarios
+    estado_utilizada = EstadoReserva.objects.get(descripcion="Utilizada")
+    estado_devuelta_nc, _ = EstadoReserva.objects.get_or_create(descripcion="Devolución NC")
+    estado_disponible, _ = EstadoLoteProduccion.objects.get_or_create(descripcion="Disponible")
+    estado_orden_devuelta, _ = EstadoVenta.objects.get_or_create(descripcion="Devolución NC")
+
+    # 4. Encontrar las reservas que se usaron para esta orden
+    reservas_utilizadas = ReservaStock.objects.filter(
+        id_orden_venta_producto__id_orden_venta=orden_venta,
+        id_estado_reserva=estado_utilizada
+    ).select_related('id_lote_produccion', 'id_orden_venta_producto__id_producto')
+
+    if not reservas_utilizadas.exists():
+        raise Exception(f"No se encontraron reservas 'Utilizadas' para la orden #{orden_venta.pk}. No se puede revertir el stock.")
+
+    # 5. Crear la Nota de Crédito
+    nota_credito = NotaCredito.objects.create(
+        id_factura=factura,
+        motivo=motivo or "Devolución de cliente"
+    )
+
+    productos_afectados = set()
+
+    # 6. Devolver el stock a los lotes
+    for reserva in reservas_utilizadas:
+        lote = reserva.id_lote_produccion
+        cantidad_a_devolver = reserva.cantidad_reservada
+
+        print(f"  > Devolviendo {cantidad_a_devolver} unidades al Lote #{lote.pk} (Producto: {reserva.id_orden_venta_producto.id_producto.nombre})")
+
+        # Devolvemos la cantidad
+        lote.cantidad = F('cantidad') + cantidad_a_devolver
+        
+        # Si el lote estaba 'Agotado', vuelve a estar 'Disponible'
+        lote.id_estado_lote_produccion = estado_disponible
+        
+        lote.save()
+        productos_afectados.add(reserva.id_orden_venta_producto.id_producto)
+
+    # 7. Actualizar estado de las reservas
+    reservas_utilizadas.update(id_estado_reserva=estado_devuelta_nc)
+
+    # 8. Actualizar estado de la Orden de Venta
+    orden_venta.id_estado_venta = estado_orden_devuelta
+    orden_venta.save()
+
+    print(f"Nota de Crédito #{nota_credito.pk} creada exitosamente.")
+    print("Disparando re-evaluación de órdenes pendientes por stock devuelto...")
+
+    # 9. (CRUCIAL) Disparar la re-evaluación de stock para órdenes pendientes
+    #    Usamos la misma función que usa 'cancelar_orden_venta'
+    for producto in productos_afectados:
+        revisar_ordenes_de_venta_pendientes(producto)
+
+    return nota_credito

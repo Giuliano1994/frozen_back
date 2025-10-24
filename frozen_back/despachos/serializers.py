@@ -86,3 +86,20 @@ class CrearOrdenDespachoSerializer(serializers.Serializer):
                 )
 
             return orden_despacho
+
+
+
+
+class HistoricalOrdenDespachoSerializer(serializers.ModelSerializer):
+    history_user_nombre = serializers.CharField(source='history_user.usuario', read_only=True)
+    estado_despacho = serializers.CharField(source='id_estado_despacho.descripcion', read_only=True)
+    repartidor_nombre = serializers.CharField(source='id_repartidor.nombre', read_only=True)
+
+    class Meta:
+        model = OrdenDespacho.history.model
+        fields = [
+            'history_id', 'history_date', 'history_type', 'history_user_nombre', 
+            'id_estado_despacho', 'estado_despacho', 
+            'id_repartidor', 'repartidor_nombre', 
+            'fecha_despacho'
+        ]

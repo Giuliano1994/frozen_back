@@ -122,3 +122,23 @@ class NoConformidadSerializer(serializers.ModelSerializer):
     class Meta:
         model = NoConformidad
         fields = '__all__'
+
+
+
+class HistoricalOrdenProduccionSerializer(serializers.ModelSerializer):
+    history_user_nombre = serializers.CharField(source='history_user.usuario', read_only=True)
+    estado_produccion = serializers.CharField(source='id_estado_orden_produccion.descripcion', read_only=True)
+    producto_nombre = serializers.CharField(source='id_producto.nombre', read_only=True)
+    supervisor_nombre = serializers.CharField(source='id_supervisor.usuario', read_only=True)
+    operario_nombre = serializers.CharField(source='id_operario.usuario', read_only=True)
+
+    class Meta:
+        model = OrdenProduccion.history.model
+        fields = [
+            'history_id', 'history_date', 'history_type', 'history_user_nombre', 
+            'id_estado_orden_produccion', 'estado_produccion', 
+            'id_producto', 'producto_nombre',
+            'id_supervisor', 'supervisor_nombre',
+            'id_operario', 'operario_nombre',
+            'cantidad', 'fecha_inicio', 'id_lote_produccion', 'id_orden_venta'
+        ]
