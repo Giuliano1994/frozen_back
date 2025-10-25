@@ -6,7 +6,8 @@ from .views import (
     LineaProduccionViewSet,
     OrdenProduccionViewSet,
     NoConformidadViewSet,
-    HistorialOrdenProduccionViewSet
+    HistorialOrdenProduccionViewSet,
+    porcentaje_desperdicio_historico
 )
 
 router = DefaultRouter()
@@ -19,4 +20,5 @@ router.register(r'historial-ordenes-produccion', HistorialOrdenProduccionViewSet
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('porcentaje-desperdicio/', porcentaje_desperdicio_historico, name='recomendacion-cantidad-produccion'),
 ]

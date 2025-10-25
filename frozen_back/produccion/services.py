@@ -1,7 +1,7 @@
 
-from django.db import transaction
+from django.db import transaction, models
 from django.db.models import Sum
-from .models import OrdenProduccion, EstadoOrdenProduccion
+from .models import OrdenProduccion, EstadoOrdenProduccion, NoConformidad, OrdenProduccion
 from stock.models import LoteMateriaPrima, EstadoLoteMateriaPrima, LoteProduccionMateria, ReservaMateriaPrima, EstadoReservaMateria
 from recetas.models import Receta, RecetaMateriaPrima
 from django.core.exceptions import ValidationError
@@ -11,6 +11,7 @@ from compras.models import OrdenCompra, OrdenCompraMateriaPrima, OrdenCompraProd
 from django.utils import timezone
 from materias_primas.models import MateriaPrima
 from collections import defaultdict
+import math
 
 @transaction.atomic
 def procesar_ordenes_en_espera(materia_prima_ingresada):
@@ -332,3 +333,49 @@ def descontar_stock_reservado(orden):
     for mp_id in materias_primas_afectadas:
         verificar_stock_mp_y_enviar_alerta(mp_id)
 
+
+
+
+
+def calcular_porcentaje_desperdicio_historico(id_producto: int) -> float:
+    """
+    Calcula el porcentaje de desperdicio promedio basado en las últimas 10
+    órdenes de producción finalizadas para un producto.
+
+    Retorna solo el porcentaje de desperdicio (como un float, ej: 10.5).
+    """
+    try:
+        # Busca el estado 'Finalizada'
+        estado_finalizada = EstadoOrdenProduccion.objects.get(descripcion__iexact="Finalizada")
+    except EstadoOrdenProduccion.DoesNotExist:
+        print("Advertencia: No se encontró el estado 'Finalizada'. No se puede calcular desperdicio.")
+        return 0.0 # Devolver 0% si no podemos calcular
+
+    # Obtener las últimas 10 órdenes de producción finalizadas para ese producto
+    ultimas_ops_finalizadas = OrdenProduccion.objects.filter(
+        id_producto_id=id_producto,
+        id_estado_orden_produccion=estado_finalizada
+    ).order_by('-fecha_creacion')[:10]
+
+    if not ultimas_ops_finalizadas:
+        print(f"No hay historial de OPs finalizadas para producto {id_producto}. No se puede calcular desperdicio.")
+        return 0.0
+
+    # Calcular el total producido y desperdiciado en esas órdenes
+    total_producido_historico = 0
+    total_desperdiciado_historico = 0
+
+    for op in ultimas_ops_finalizadas:
+        total_producido_historico += op.cantidad
+        desperdicio_op = NoConformidad.objects.filter(
+            id_orden_produccion=op
+        ).aggregate(total=models.Sum('cant_desperdiciada'))['total'] or 0
+        total_desperdiciado_historico += desperdicio_op
+
+    # Calcular el porcentaje de desperdicio promedio
+    if total_producido_historico > 0:
+        porcentaje_desperdicio = (total_desperdiciado_historico / total_producido_historico) * 100.0 # Usar 100.0 para resultado float
+    else:
+        porcentaje_desperdicio = 0.0
+
+    return round(porcentaje_desperdicio, 2) # Devolver float redondeado

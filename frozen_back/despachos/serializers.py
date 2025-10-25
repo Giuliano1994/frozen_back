@@ -5,7 +5,7 @@ from .models import DespachoOrenVenta, EstadoDespacho, OrdenDespacho, Repartidor
 class RepartidorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Repartidor
-        fields = ['id_repartidor', 'nombre', 'telefono']
+        fields = ['id_repartidor', 'nombre', 'telefono', 'patente']
 
 class EstadoDespachoSerializer(serializers.ModelSerializer):
     class Meta:

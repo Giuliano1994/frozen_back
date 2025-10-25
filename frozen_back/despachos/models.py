@@ -12,6 +12,7 @@ class Repartidor(models.Model):
     id_repartidor = models.AutoField(primary_key=True)
     nombre = models.CharField(max_length=100)
     telefono = models.CharField(max_length=15)
+    patente = models.CharField(max_length=20)
 
     class Meta:
         db_table = "repartidor"

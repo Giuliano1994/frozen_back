@@ -4,8 +4,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import transaction
-from produccion.services import gestionar_reservas_para_orden_produccion, descontar_stock_reservado
+from produccion.services import gestionar_reservas_para_orden_produccion, descontar_stock_reservado, calcular_porcentaje_desperdicio_historico
 from recetas.models import Receta, RecetaMateriaPrima
+from productos.models import Producto
 from .models import EstadoOrdenProduccion, LineaProduccion, OrdenProduccion, NoConformidad, estado_linea_produccion
 from stock.models import EstadoLoteMateriaPrima, LoteMateriaPrima, LoteProduccion, EstadoLoteProduccion, LoteProduccionMateria, EstadoReservaMateria, ReservaMateriaPrima
 from .serializers import (
@@ -22,6 +23,7 @@ from datetime import timedelta
 from django.db.models import Sum
 from rest_framework.exceptions import ValidationError
 from ventas.services import revisar_ordenes_de_venta_pendientes
+from rest_framework.decorators import api_view
 # ------------------------------
 # ViewSets básicos
 # ------------------------------
@@ -284,3 +286,48 @@ class HistorialOrdenProduccionViewSet(viewsets.ReadOnlyModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['history_type', 'history_user', 'id_estado_orden_produccion', 'id_producto', 'id_supervisor', 'id_operario']
     search_fields = ['history_user__usuario', 'id_producto__nombre']
+
+
+
+@api_view(['GET'])
+def porcentaje_desperdicio_historico(request): # <-- Cambiar nombre de la función/vista
+    """
+    Devuelve el porcentaje de desperdicio histórico promedio para un producto,
+    basado en las últimas 10 órdenes de producción finalizadas.
+
+    Parámetro esperado en la URL (query param):
+    - id_producto: El ID del producto.
+    """
+    id_producto_str = request.query_params.get('id_producto')
+
+    # Validar parámetro
+    if not id_producto_str:
+        return Response(
+            {"error": "Falta el parámetro 'id_producto'"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        id_producto = int(id_producto_str)
+    except (ValueError, TypeError):
+        return Response(
+            {"error": "El parámetro 'id_producto' debe ser un número entero."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Validar que el producto exista
+    if not Producto.objects.filter(pk=id_producto).exists():
+         return Response({"error": f"El producto con ID {id_producto} no existe."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Llamar al servicio actualizado
+    try:
+        porcentaje = calcular_porcentaje_desperdicio_historico(id_producto)
+        # Devolver solo el porcentaje en el JSON de respuesta
+        return Response({"porcentaje_desperdicio": porcentaje}, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        print(f"Error al calcular porcentaje de desperdicio: {e}")
+        return Response(
+            {"error": "Ocurrió un error al calcular el porcentaje de desperdicio."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
