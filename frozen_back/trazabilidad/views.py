@@ -5,6 +5,10 @@ from rest_framework.response import Response
 from .services import get_traceability_backward, get_traceability_forward
 from .services import get_traceability_backward, get_traceability_forward, get_traceability_for_order
 
+from stock.models import ReservaStock, LoteProduccion
+from ventas.models import OrdenVenta, OrdenVentaProducto
+from ventas.serializers import OrdenVentaSerializer
+
 class TrazabilidadViewSet(viewsets.ViewSet):
     """
     ViewSet para realizar consultas de trazabilidad.
@@ -58,7 +62,7 @@ class TrazabilidadViewSet(viewsets.ViewSet):
         Requiere: ?id_ov=<id_orden_venta>
         """
         # Usamos 'id_ov' para diferenciarlo de 'id_ovp'
-        id_ov = request.query_params.get('id_ov') 
+        id_ov = request.query_params.get('id_ov')
         
         if not id_ov:
             return Response(
@@ -73,4 +77,35 @@ class TrazabilidadViewSet(viewsets.ViewSet):
             return Response(report, status=status.HTTP_404_NOT_FOUND)
         
         return Response(report, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=['get'], url_path='ordenes-venta')
+    def obtener_ordenes_venta(self, request, pk=None):
+        """
+        Endpoint personalizado que obtiene todas las órdenes de venta asociadas
+        a un lote de producción.
+        """
+        try:
+            # Paso 1: obtener reservas asociadas al lote
+            reservas = ReservaStock.objects.filter(id_lote_produccion_id=pk)
+
+            if not reservas.exists():
+                return Response({"message": "No se encontraron reservas para este lote."},
+                                status=status.HTTP_404_NOT_FOUND)
+
+            # Paso 2: obtener IDs de orden_venta_producto
+            ids_orden_venta_producto = reservas.values_list("id_orden_venta_producto_id", flat=True)
+
+            # Paso 3: obtener las órdenes de venta relacionadas
+            ids_orden_venta = OrdenVentaProducto.objects.filter(
+                id_orden_venta_producto__in=ids_orden_venta_producto
+            ).values_list("id_orden_venta_id", flat=True)
+
+            # Paso 4: traer las órdenes de venta
+            ordenes = OrdenVenta.objects.filter(id_orden_venta__in=ids_orden_venta).distinct()
+
+            serializer = OrdenVentaSerializer(ordenes, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 # Create your views here.

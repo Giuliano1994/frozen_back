@@ -11,6 +11,7 @@ router = DefaultRouter()
 # Usamos r'trazabilidad' como el prefijo de la URL.
 # Debemos especificar un 'basename' porque este ViewSet no tiene un 'queryset'.
 router.register(r'trazabilidad', TrazabilidadViewSet, basename='trazabilidad')
+router.register(r'lotes-produccion', TrazabilidadViewSet, basename='lotes-produccion')
 
 # Las URLs de la API ahora son generadas automáticamente por el router.
 urlpatterns = [

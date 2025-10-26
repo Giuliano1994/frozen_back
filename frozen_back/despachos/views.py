@@ -2,12 +2,19 @@ from django.shortcuts import render
 from rest_framework import viewsets, filters, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from django_filters.rest_framework import DjangoFilterBackend
 
 from ventas.models import EstadoVenta
-from .models import OrdenDespacho
-from django_filters.rest_framework import DjangoFilterBackend
 from .models import EstadoDespacho, Repartidor, OrdenDespacho, DespachoOrenVenta
-from .serializers import CrearOrdenDespachoSerializer, EstadoDespachoSerializer, RepartidorSerializer, OrdenDespachoSerializer, DespachoOrdenVentaSerializer, HistoricalOrdenDespachoSerializer
+from .serializers import (
+    CrearOrdenDespachoSerializer,
+    EstadoDespachoSerializer,
+    RepartidorSerializer,
+    OrdenDespachoSerializer,
+    DespachoOrdenVentaSerializer,
+    HistoricalOrdenDespachoSerializer,
+)
+from .filters import OrdenDespachoFilter
 
 class estadoDespachoViewSet(viewsets.ModelViewSet):
     queryset = EstadoDespacho.objects.all()
@@ -24,13 +31,30 @@ class despachoOrenVentaViewSet(viewsets.ModelViewSet):
 
 
 class OrdenDespachoViewSet(viewsets.ViewSet):
+    """
+    ViewSet personalizado para Órdenes de Despacho.
+    Incluye filtros, búsqueda y ordenamiento sin perder list() ni retrieve().
+    """
+
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_class = OrdenDespachoFilter
+    search_fields = ["id_repartidor__nombre", "id_estado_despacho__descripcion"]
+    ordering_fields = ["fecha_despacho"]
+    ordering = ["-fecha_despacho"]
+
     def list(self, request):
         queryset = OrdenDespacho.objects.all()
+        # Aplicar filtros, búsqueda y ordenamiento
+        for backend in list(self.filter_backends):
+            queryset = backend().filter_queryset(request, queryset, self)
         serializer = OrdenDespachoSerializer(queryset, many=True)
         return Response(serializer.data)
 
     def retrieve(self, request, pk=None):
-        despacho = OrdenDespacho.objects.get(pk=pk)
+        try:
+            despacho = OrdenDespacho.objects.get(pk=pk)
+        except OrdenDespacho.DoesNotExist:
+            return Response({"error": "Orden de despacho no encontrada"}, status=404)
         serializer = OrdenDespachoSerializer(despacho)
         return Response(serializer.data)
 

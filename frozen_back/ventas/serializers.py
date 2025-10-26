@@ -120,6 +120,9 @@ class OrdenVentaSerializer(serializers.ModelSerializer):
     # Propiedad para ver la dirección formateada
     direccion_entrega_completa = serializers.CharField(read_only=True)
 
+    # para ver el usuario del empleado   
+    empleado_usuario = serializers.CharField(source='id_empleado.usuario', read_only=True)
+
     class Meta:
         model = OrdenVenta
         fields = [
@@ -134,6 +137,7 @@ class OrdenVentaSerializer(serializers.ModelSerializer):
             "id_estado_venta",
             "id_prioridad",
             "id_empleado",
+            "empleado_usuario",
             "tipo_venta",
             "tipo_venta_display",
             "calle",

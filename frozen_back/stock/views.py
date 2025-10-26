@@ -267,13 +267,14 @@ def listar_materias_primas(request):
         cantidad_disponible_total = 0
         for lote in lotes_disponibles:
             cantidad_disponible_total += lote.cantidad_disponible
+            # cantidad_reservada += lote.cantidad_reservada()
 
         data.append({
             "id_materia_prima": materia.id_materia_prima,
             "nombre": materia.nombre,
             "unidad_medida": materia.id_unidad.descripcion,
             "umbral_minimo": materia.umbral_minimo,
-            "cantidad_disponible": max(cantidad_disponible_total, 0)  # Evitamos valores negativos
+            "cantidad_disponible": max(cantidad_disponible_total, 0),  # Evitamos valores negativos
         })
 
     return JsonResponse(data, safe=False)
