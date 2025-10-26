@@ -82,10 +82,13 @@ def login_ecommerce(request):
         )
     except Cliente.DoesNotExist:
         return JsonResponse({"error": "Credenciales inválidas"}, status=401)
+    
 
     clienteEncontrado = {
+        "nombre": cliente.nombre,
+        "apellido": cliente.apellido,
         "email": cliente.email,
-        "contraseña": cliente.contraseña
+        "cuil": cliente.cuil,
     }
 
     return JsonResponse(clienteEncontrado, status = 200)
