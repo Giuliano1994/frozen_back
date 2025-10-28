@@ -48,7 +48,7 @@ class EstadoLoteMateriaPrimaViewSet(viewsets.ModelViewSet):
 
 # ----- Lotes -----
 class LoteProduccionViewSet(viewsets.ModelViewSet):
-    queryset = LoteProduccion.objects.all().order_by('-id_lote_produccion')
+    queryset = LoteProduccion.objects.all()
     serializer_class = LoteProduccionSerializer
     filter_backends = [filters.SearchFilter, DjangoFilterBackend]
     search_fields = ["id_producto__nombre"]
@@ -61,7 +61,7 @@ def obtener_lotes_de_materia_prima(request, id_materia_prima):
     return Response(serializer.data)
 
 class LoteMateriaPrimaViewSet(viewsets.ModelViewSet):
-    queryset = LoteMateriaPrima.objects.all().order_by('-id_lote_materia_prima')
+    queryset = LoteMateriaPrima.objects.all()
     serializer_class = LoteMateriaPrimaSerializer
     filter_backends = [filters.SearchFilter, DjangoFilterBackend]
     search_fields = ["id_materia_prima__nombre"]
