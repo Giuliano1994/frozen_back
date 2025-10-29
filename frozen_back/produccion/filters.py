@@ -1,5 +1,5 @@
 import django_filters
-from .models import OrdenProduccion
+from .models import EstadoOrdenProduccion, OrdenProduccion
 
 
 class OrdenProduccionFilter(django_filters.FilterSet):
@@ -36,3 +36,20 @@ class OrdenProduccionFilter(django_filters.FilterSet):
             'fecha_desde',
             'fecha_hasta',
         ]
+
+    def filter_queryset(self, queryset):
+        # Aplicar los filtros normales
+        queryset = super().filter_queryset(queryset)
+
+        # Si el filtro 'estado' fue enviado
+        estado_id = self.data.get('estado')
+        if estado_id:
+            try:
+                estado = EstadoOrdenProduccion.objects.get(pk=estado_id)
+                if estado.descripcion.lower() == 'en proceso':
+                    # Ordenar por hora_inicio_produccion (ascendente)
+                    queryset = queryset.order_by('-fecha_inicio')
+            except EstadoOrdenProduccion.DoesNotExist:
+                pass
+
+        return queryset

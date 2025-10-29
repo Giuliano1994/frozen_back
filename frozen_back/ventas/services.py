@@ -1,135 +1,20 @@
 from django.db import transaction
-from .models import OrdenVentaProducto, EstadoVenta, OrdenVenta 
+from .models import OrdenVentaProducto, EstadoVenta, OrdenVenta, Factura, NotaCredito
 from stock.models import LoteProduccion, ReservaStock, EstadoLoteProduccion, EstadoReserva 
 from stock.services import get_stock_disponible_para_producto, verificar_stock_y_enviar_alerta
 from stock.models import ReservaStock
 from productos.models import Producto
+from produccion.models import OrdenProduccion, EstadoOrdenProduccion
+from recetas.models import ProductoLinea, Receta
+from empleados.models import Empleado
+from django.utils import timezone
+from datetime import timedelta
+from produccion.services import gestionar_reservas_para_orden_produccion
+from compras.models import OrdenCompra, OrdenCompraProduccion, EstadoOrdenCompra
+from materias_primas.models import MateriaPrima
 from django.db.models import Sum, F, Q
 
-"""
 
-def _descontar_stock_fisico(orden_venta):
-    
-    #Función auxiliar para descontar el stock físico de los lotes.
-    #Se usa cuando sabemos que hay stock suficiente para toda la orden.
-    
-    lineas_de_orden = OrdenVentaProducto.objects.filter(id_orden_venta=orden_venta)
-    estado_disponible = EstadoLoteProduccion.objects.get(descripcion="Disponible")
-    estado_agotado, _ = EstadoLoteProduccion.objects.get_or_create(descripcion="Agotado")
-
-    for linea in lineas_de_orden:
-        cantidad_a_descontar = linea.cantidad
-        lotes = LoteProduccion.objects.filter(
-            id_producto=linea.id_producto,
-            id_estado_lote_produccion=estado_disponible,
-            cantidad__gt=0
-        ).order_by("fecha_vencimiento")
-
-        for lote in lotes:
-            if cantidad_a_descontar <= 0: break
-            
-            cantidad_tomada = min(lote.cantidad, cantidad_a_descontar)
-            
-            lote.cantidad -= cantidad_tomada
-            cantidad_a_descontar -= cantidad_tomada
-            
-            if lote.cantidad == 0:
-                lote.id_estado_lote_produccion = estado_agotado
-            
-            lote.save()
-
-def _reservar_stock_parcial(orden_venta):
-    
-    #Función auxiliar para reservar el stock que haya disponible.
-    #Se usa cuando el stock no es suficiente para cubrir toda la orden.
-    
-    # Limpiamos reservas previas para esta orden por si se re-ejecuta.
-    ReservaStock.objects.filter(id_orden_venta_producto__id_orden_venta=orden_venta).delete()
-
-    lineas_de_orden = OrdenVentaProducto.objects.filter(id_orden_venta=orden_venta)
-    for linea in lineas_de_orden:
-        cantidad_a_reservar = linea.cantidad
-        
-        lotes_disponibles = LoteProduccion.objects.filter(
-            id_producto=linea.id_producto,
-            cantidad__gt=0,
-            id_estado_lote_produccion__descripcion="Disponible"
-        ).order_by('fecha_vencimiento')
-
-        for lote in lotes_disponibles:
-            if cantidad_a_reservar <= 0: break
-
-            stock_real_disponible_lote = lote.cantidad_disponible
-            cantidad_reservada_de_lote = min(cantidad_a_reservar, stock_real_disponible_lote)
-
-            if cantidad_reservada_de_lote > 0:
-                ReservaStock.objects.create(
-                    id_orden_venta_producto=linea,
-                    id_lote_produccion=lote,
-                    cantidad_reservada=cantidad_reservada_de_lote
-                )
-                cantidad_a_reservar -= cantidad_reservada_de_lote
-
-# --- FUNCIÓN PRINCIPAL Y ORQUESTADORA ---
-@transaction.atomic
-def gestionar_stock_y_estado_para_orden_venta(orden_venta):
-    
-    #Orquesta todo el proceso de gestión de stock para una orden de venta.
-    #Decide si descontar stock directamente o crear una reserva parcial.
-    
-    lineas_de_orden = OrdenVentaProducto.objects.filter(id_orden_venta=orden_venta)
-    
-    if not lineas_de_orden.exists():
-        # Si no hay productos, no hay nada que hacer con el stock.
-        return
-
-    # 1. Verificar si hay stock completo para TODA la orden
-    stock_completo = True
-    for linea in lineas_de_orden:
-        stock_disponible = get_stock_disponible_para_producto(linea.id_producto.pk)
-        if stock_disponible < linea.cantidad:
-            stock_completo = False
-            break
-
-    # 2. Actuar según el resultado
-    if stock_completo:
-        print(f"Stock completo para la Orden #{orden_venta.pk}. Descontando stock físico...")
-        # CASO 1: Hay stock, se descuenta directamente
-        _descontar_stock_fisico(orden_venta)
-        estado_final = EstadoVenta.objects.get(descripcion__iexact="Pendiente de Pago")
-    else:
-        print(f"Stock incompleto para la Orden #{orden_venta.pk}. Reservando stock disponible...")
-        # CASO 2: No hay stock, se reserva lo que se pueda
-        _reservar_stock_parcial(orden_venta)
-        estado_final = EstadoVenta.objects.get(descripcion__iexact="En Preparación")
-    
-    # 3. Actualizar el estado final de la orden
-    orden_venta.id_estado_venta = estado_final
-    orden_venta.save()
-
-    for linea in lineas_de_orden:
-        verificar_stock_y_enviar_alerta(linea.id_producto.pk)
-
-    
-        
-
-        
-def cancelar_orden_venta(orden_venta):
-    
-    #Libera todo el stock reservado y cambia el estado de la orden a 'Cancelada'.
-    
-    # Liberar todo el stock reservado para esta orden
-    ReservaStock.objects.filter(id_orden_venta_producto__id_orden_venta=orden_venta).delete()
-    
-    # Actualizar el estado
-    estado_cancelada = EstadoVenta.objects.get(descripcion__iexact="Cancelada")
-    orden_venta.id_estado_venta = estado_cancelada
-    orden_venta.save()
-    print(f"Orden #{orden_venta.pk} cancelada y stock liberado.")
-
-
-
-"""
 
 # --- NUEVA FUNCIÓN PARA EL PASO FINAL DE FACTURACIÓN ---
 # --- MÉTODO EDITADO ---
@@ -239,6 +124,67 @@ def gestionar_stock_y_estado_para_orden_venta(orden_venta: OrdenVenta):
                     cantidad_faltante_a_reservar -= cantidad_a_tomar_de_lote
                     print(f"  > Reservadas {cantidad_a_tomar_de_lote} unidades del lote #{lote.pk}.")
 
+            # Si después de intentar reservar sigue faltando, creamos una orden de producción
+            # para ESTE producto (independientemente de cuántas líneas tenga la orden de venta).
+            if cantidad_faltante_a_reservar > 0:
+                try:
+                    # Obtener la velocidad de producción (cant_por_hora) asociada al producto
+                    producto_linea = ProductoLinea.objects.filter(id_producto=linea.id_producto).first()
+                    cant_por_hora = producto_linea.cant_por_hora if producto_linea and producto_linea.cant_por_hora else None
+                    if not cant_por_hora or cant_por_hora <= 0:
+                        print(f"No se encontró 'cant_por_hora' para el producto {linea.id_producto.nombre}. No se creará orden de producción.")
+                    else:
+                        # Calcular múltiplo de cant_por_hora necesario para cubrir lo faltante
+                        faltante = cantidad_faltante_a_reservar
+                        multiplo = (faltante + cant_por_hora - 1) // cant_por_hora
+                        cantidad_a_producir = multiplo * cant_por_hora
+
+                        # Obtener o crear estado "En espera" de forma segura
+                        estado_en_espera = EstadoOrdenProduccion.objects.filter(descripcion__iexact="En espera").first()
+                        if not estado_en_espera:
+                            estado_en_espera = EstadoOrdenProduccion.objects.create(descripcion="En espera")
+
+                        # Asignar un supervisor por defecto si existe alguno (evita que el front falle por ausencia de campo)
+                        default_supervisor = Empleado.objects.first()
+
+                        orden_prod = OrdenProduccion.objects.create(
+                            cantidad=cantidad_a_producir,
+                            id_estado_orden_produccion=estado_en_espera,
+                            id_producto=linea.id_producto,
+                            id_orden_venta=orden_venta,
+                            id_linea_produccion=(producto_linea.id_linea_produccion if producto_linea and getattr(producto_linea, 'id_linea_produccion', None) else None),
+                            id_supervisor=default_supervisor,
+                        )
+                        print(f"Creada OrdenProduccion #{orden_prod.id_orden_produccion} para producir {cantidad_a_producir} unidades (múltiplo de {cant_por_hora}) asociada a OrdenVenta #{orden_venta.pk}")
+
+                        # Programar la gestión de reservas para que se ejecute después del commit
+                        try:
+                            transaction.on_commit(lambda op=orden_prod: gestionar_reservas_para_orden_produccion(op))
+                        except Exception as e:
+                            # on_commit rarely falla; si ocurre, lo registramos
+                            print(f"Error al programar la gestión de reservas para la orden de producción {orden_prod.pk}: {e}")
+                        # Crear lote de producción asociado a la orden (mismo comportamiento que en el ViewSet)
+                        try:
+                            estado_lote_espera = EstadoLoteProduccion.objects.filter(descripcion__iexact="En espera").first()
+                            if not estado_lote_espera:
+                                estado_lote_espera = EstadoLoteProduccion.objects.create(descripcion="En espera")
+
+                            dias = getattr(orden_prod.id_producto, 'dias_duracion', 0) or 0
+                            lote = LoteProduccion.objects.create(
+                                id_producto=orden_prod.id_producto,
+                                id_estado_lote_produccion=estado_lote_espera,
+                                cantidad=orden_prod.cantidad,
+                                fecha_produccion=timezone.now().date(),
+                                fecha_vencimiento=timezone.now().date() + timedelta(days=dias)
+                            )
+
+                            orden_prod.id_lote_produccion = lote
+                            orden_prod.save()
+                        except Exception as e:
+                            print(f"Error creando lote de producción para OrdenProduccion {getattr(orden_prod,'id_orden_produccion', 'n/a')}: {e}")
+                except Exception as e:
+                    print(f"Error creando orden de producción para la orden de venta {orden_venta.pk}: {e}")
+
     # --- RE-EVALUACIÓN FINAL ---
     # 2. Después de intentar reservar, verificamos si la orden está completa
     stock_completo_final = True
@@ -268,19 +214,36 @@ def cancelar_orden_venta(orden_venta):
     estado_activa, _ = EstadoReserva.objects.get_or_create(descripcion="Activa")
     estado_cancelada, _ = EstadoReserva.objects.get_or_create(descripcion="Cancelada")
 
+    # --- CAMBIO CLAVE 1: Obtenemos los productos afectados ANTES de cancelar ---
+    # Necesitamos saber qué productos se liberaron para poder re-evaluar otras órdenes.
+    reservas_a_cancelar = ReservaStock.objects.filter(
+        id_orden_venta_producto__id_orden_venta=orden_venta,
+        id_estado_reserva=estado_activa
+    )
+    productos_liberados = set(
+        reserva.id_orden_venta_producto.id_producto for reserva in reservas_a_cancelar.select_related('id_orden_venta_producto__id_producto')
+    )
+
+    # Cancelamos las reservas activas
+    reservas_a_cancelar.update(id_estado_reserva=estado_cancelada)
+   
+    """
     # --- CAMBIO CLAVE: En lugar de borrar, cancelamos las reservas activas ---
     ReservaStock.objects.filter(
         id_orden_venta_producto__id_orden_venta=orden_venta,
         id_estado_reserva=estado_activa
     ).update(id_estado_reserva=estado_cancelada)
-    
+    """
+
     # Actualizar el estado de la orden
     estado_orden_cancelada, _ = EstadoVenta.objects.get_or_create(descripcion__iexact="Cancelada")
     orden_venta.id_estado_venta = estado_orden_cancelada
     orden_venta.save()
     print(f"Orden #{orden_venta.pk} cancelada y stock liberado.")
 
-
+    # --- CAMBIO CLAVE 2: Disparamos la re-evaluación para cada producto liberado ---
+    for producto in productos_liberados:
+        revisar_ordenes_de_venta_pendientes(producto)
 
 
 
@@ -309,7 +272,7 @@ def revisar_ordenes_de_venta_pendientes(producto: Producto):
     ordenes_a_revisar = OrdenVenta.objects.filter(
         id_estado_venta=estado_en_preparacion,
         ordenventaproducto__id_producto=producto
-    ).distinct()
+    ).distinct().order_by('fecha_entrega')
 
     if not ordenes_a_revisar.exists():
         print("No se encontraron órdenes de venta pendientes para este producto.")
@@ -322,3 +285,90 @@ def revisar_ordenes_de_venta_pendientes(producto: Producto):
     for orden in ordenes_a_revisar:
         print(f"Re-evaluando Orden de Venta #{orden.pk}...")
         gestionar_stock_y_estado_para_orden_venta(orden)
+
+
+
+
+
+@transaction.atomic
+def crear_nota_credito_y_devolver_stock(orden_venta: OrdenVenta, motivo: str = None):
+    """
+    1. Crea una Nota de Crédito para la factura de la orden.
+    2. Encuentra las reservas 'Utilizadas' de esa orden.
+    3. Devuelve el stock físico (cantidad) a los lotes correspondientes.
+    4. Cambia el estado de los lotes a 'Disponible' si estaban 'Agotados'.
+    5. Cambia el estado de las reservas a 'Devolución NC'.
+    6. Cambia el estado de la orden a 'Devolución NC'.
+    7. Dispara la re-evaluación de stock para otras órdenes pendientes.
+    """
+    print(f"Iniciando creación de Nota de Crédito para Orden #{orden_venta.pk}...")
+
+    # 1. Validar estado de la orden y encontrar factura
+    estado_facturada, _ = EstadoVenta.objects.get_or_create(descripcion__iexact="Pagada")
+    if orden_venta.id_estado_venta != estado_facturada:
+        raise Exception(f"La orden #{orden_venta.pk} no está 'Pagada'. No se puede crear nota de crédito.")
+
+    try:
+        factura = Factura.objects.get(id_orden_venta=orden_venta)
+    except Factura.DoesNotExist:
+        raise Exception(f"No se encontró una factura para la orden #{orden_venta.pk}.")
+
+    # 2. Validar que no exista ya una NC
+    if NotaCredito.objects.filter(id_factura=factura).exists():
+        raise Exception(f"Ya existe una nota de crédito para la factura #{factura.pk}.")
+
+    # 3. Obtener estados necesarios
+    estado_utilizada = EstadoReserva.objects.get(descripcion="Utilizada")
+    estado_devuelta_nc, _ = EstadoReserva.objects.get_or_create(descripcion="Devolución NC")
+    estado_disponible, _ = EstadoLoteProduccion.objects.get_or_create(descripcion="Disponible")
+    estado_orden_devuelta, _ = EstadoVenta.objects.get_or_create(descripcion="Devolución NC")
+
+    # 4. Encontrar las reservas que se usaron para esta orden
+    reservas_utilizadas = ReservaStock.objects.filter(
+        id_orden_venta_producto__id_orden_venta=orden_venta,
+        id_estado_reserva=estado_utilizada
+    ).select_related('id_lote_produccion', 'id_orden_venta_producto__id_producto')
+
+    if not reservas_utilizadas.exists():
+        raise Exception(f"No se encontraron reservas 'Utilizadas' para la orden #{orden_venta.pk}. No se puede revertir el stock.")
+
+    # 5. Crear la Nota de Crédito
+    nota_credito = NotaCredito.objects.create(
+        id_factura=factura,
+        motivo=motivo or "Devolución de cliente"
+    )
+
+    productos_afectados = set()
+
+    # 6. Devolver el stock a los lotes
+    for reserva in reservas_utilizadas:
+        lote = reserva.id_lote_produccion
+        cantidad_a_devolver = reserva.cantidad_reservada
+
+        print(f"  > Devolviendo {cantidad_a_devolver} unidades al Lote #{lote.pk} (Producto: {reserva.id_orden_venta_producto.id_producto.nombre})")
+
+        # Devolvemos la cantidad
+        lote.cantidad = F('cantidad') + cantidad_a_devolver
+        
+        # Si el lote estaba 'Agotado', vuelve a estar 'Disponible'
+        lote.id_estado_lote_produccion = estado_disponible
+        
+        lote.save()
+        productos_afectados.add(reserva.id_orden_venta_producto.id_producto)
+
+    # 7. Actualizar estado de las reservas
+    reservas_utilizadas.update(id_estado_reserva=estado_devuelta_nc)
+
+    # 8. Actualizar estado de la Orden de Venta
+    orden_venta.id_estado_venta = estado_orden_devuelta
+    orden_venta.save()
+
+    print(f"Nota de Crédito #{nota_credito.pk} creada exitosamente.")
+    print("Disparando re-evaluación de órdenes pendientes por stock devuelto...")
+
+    # 9. (CRUCIAL) Disparar la re-evaluación de stock para órdenes pendientes
+    #    Usamos la misma función que usa 'cancelar_orden_venta'
+    for producto in productos_afectados:
+        revisar_ordenes_de_venta_pendientes(producto)
+
+    return nota_credito

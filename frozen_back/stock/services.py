@@ -1,7 +1,8 @@
 from django.db import models, transaction
 from django.core.mail import send_mail
 from productos.models import Producto
-from .models import LoteProduccion, EstadoLoteProduccion
+from .models import LoteProduccion, EstadoLoteProduccion, LoteMateriaPrima, EstadoLoteMateriaPrima, ReservaMateriaPrima, EstadoReservaMateria
+from materias_primas.models import MateriaPrima
 from django.db.models import Sum, F, Q
 from django.db.models.functions import Coalesce
 from django.conf import settings
@@ -23,6 +24,53 @@ def cantidad_total_producto(id_producto):
         .get("total") or 0
     )
     return total
+
+
+
+def get_stock_disponible_todos_los_productos():
+    """
+    Devuelve un QuerySet con la cantidad total DISPONIBLE de cada producto.
+    Calcula el stock basándose en lotes 'Disponibles' y reservas 'Activas'.
+    """
+    
+    # 1. Filtro para sumar solo la cantidad de lotes 'Disponibles'
+    filtro_lotes_disponibles = Q(
+        loteproduccion__id_estado_lote_produccion__descripcion="Disponible"
+    )
+    
+    # 2. Filtro para sumar solo la cantidad reservada de reservas 'Activas'
+    #    que pertenezcan a lotes 'Disponibles'.
+    filtro_reservas_activas = (
+        Q(loteproduccion__id_estado_lote_produccion__descripcion="Disponible") &
+        Q(loteproduccion__reservas__id_estado_reserva__descripcion='Activa')
+    )
+
+    # 3. Consultamos desde Producto y anotamos los totales
+    productos_con_stock = Producto.objects.annotate(
+        # Suma total de 'cantidad' de todos sus lotes 'Disponibles'
+        total_producido=Coalesce(
+            Sum('loteproduccion__cantidad', filter=filtro_lotes_disponibles), 
+            0
+        ),
+        # Suma total de 'cantidad_reservada' de sus reservas 'Activas'
+        total_reservado=Coalesce(
+            Sum('loteproduccion__reservas__cantidad_reservada', filter=filtro_reservas_activas), 
+            0
+        )
+    ).annotate(
+        # 4. Calculamos el disponible final para cada producto
+        cantidad_disponible=F('total_producido') - F('total_reservado')
+    )
+
+    # 5. Devolvemos los campos que nos interesan
+    #    (Añado 'nombre' porque es muy útil y no tiene costo de rendimiento aquí)
+    return productos_con_stock.values(
+        'id_producto', 
+        'nombre', 
+        'cantidad_disponible',
+        'umbral_minimo',
+        'descripcion'
+    ).order_by('id_producto')
 
 
 
@@ -55,6 +103,8 @@ def get_stock_disponible_para_producto(id_producto):
     total_disponible = resultado_agregado.get('total') or 0
 
     return total_disponible
+
+
 
 # --- NUEVA FUNCIÓN REUTILIZABLE ---
 def verificar_stock_para_orden_venta(orden_venta):
@@ -201,3 +251,80 @@ def _enviar_telegram_async(mensaje):
 
     # Ejecutar el envío en un hilo separado
     threading.Thread(target=send_request).start()
+
+
+
+
+
+
+
+
+
+# --- INICIO DE NUEVAS FUNCIONES PARA MATERIA PRIMA ---
+
+def get_stock_disponible_para_materia_prima(id_materia_prima):
+    """
+    Devuelve la cantidad total DISPONIBLE de una materia prima.
+    Calcula el total reservado para cada lote sumando ÚNICAMENTE las reservas 'Activas'.
+    """
+    
+    # 1. Filtro para reservas activas (materias primas)
+    filtro_reservas_activas = Q(reservas__id_estado_reserva_materia__descripcion='Activa')
+
+    # 2. Anotamos cada lote de MP con la suma de sus reservas activas.
+    lotes_con_reservas = LoteMateriaPrima.objects.filter(
+        id_materia_prima_id=id_materia_prima,
+        id_estado_lote_materia_prima__descripcion="Disponible"
+    ).annotate(
+        total_reservado=Coalesce(Sum('reservas__cantidad_reservada', filter=filtro_reservas_activas), 0)
+    )
+
+    # 3. Anotamos la cantidad disponible para cada lote (stock físico - reservado).
+    lotes_con_disponible = lotes_con_reservas.annotate(
+        disponible=F('cantidad') - F('total_reservado')
+    )
+
+    # 4. Finalmente, sumamos el total de las cantidades disponibles de todos los lotes.
+    resultado_agregado = lotes_con_disponible.aggregate(
+        total=Sum('disponible')
+    )
+
+    total_disponible = resultado_agregado.get('total') or 0
+
+    return total_disponible
+
+
+def verificar_stock_mp_y_enviar_alerta(id_materia_prima):
+    """
+    Verifica el stock de una materia prima contra su umbral mínimo
+    y envía una alerta por Telegram si está por debajo.
+    """
+    try:
+        materia_prima = MateriaPrima.objects.get(pk=id_materia_prima)
+    except MateriaPrima.DoesNotExist:
+        print(f"Error: La materia prima con ID {id_materia_prima} no existe.")
+        return
+
+    total_disponible = get_stock_disponible_para_materia_prima(id_materia_prima)
+    umbral = materia_prima.umbral_minimo
+    
+    print(f"Verificando stock MP {materia_prima.nombre}: Disponible={total_disponible}, Umbral={umbral}")
+
+    if total_disponible < umbral:
+        # Formatear el mensaje para Telegram
+        asunto_email = f"⚠️ Alerta de stock bajo - {materia_prima.nombre}"
+        cuerpo_notificacion = (
+            f"*{asunto_email}*\n\n"  # Título en negrita para Telegram
+            f"Materia Prima: {materia_prima.nombre}\n"
+            f"Cantidad disponible: *{total_disponible}*\n"
+            f"Umbral mínimo: *{umbral}*\n\n"
+            "Por favor, contactar al proveedor o revisar compras."
+        )
+        
+        # Enviar mensaje de Telegram
+        _enviar_telegram_async(cuerpo_notificacion)
+        
+        print(f"¡ALERTA DE STOCK BAJO enviada para {materia_prima.nombre}!")
+
+# --- FIN DE NUEVAS FUNCIONES ---
+    

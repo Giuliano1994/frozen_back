@@ -51,7 +51,12 @@ INSTALLED_APPS = [
     'materias_primas',
     'produccion',
     'stock',
-    'recetas'
+    'recetas',
+    'compras',
+    'trazabilidad',
+    'despachos',
+    'drf_spectacular',
+    'simple_history',
 ]
 
 MIDDLEWARE = [
@@ -63,6 +68,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'simple_history.middleware.HistoryRequestMiddleware',
 ]
 
 ROOT_URLCONF = 'frozen_back.urls'
@@ -155,6 +161,8 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,  # número de resultados por página
+
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
 
@@ -181,3 +189,9 @@ EMPRESA_MAIL = 'frozensa@gmail.com'
 import os
 TELEGRAM_BOT_TOKEN = "8145316419:AAG9g5LIdUYLsdsdFIebXQ40hvqwHF7iSXk"
 TELEGRAM_CHAT_ID = -1003144629342
+
+
+
+SECURE_SSL_REDIRECT = True
+USE_X_FORWARDED_HOST = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

@@ -1,8 +1,9 @@
 from django.db import models
-
+from simple_history.models import HistoricalRecords
 from productos.models import Producto
 from empleados.models import Empleado
 from stock.models import LoteProduccion
+from ventas.models import OrdenVenta
 
 class EstadoOrdenProduccion(models.Model):
     id_estado_orden_produccion = models.AutoField(primary_key=True)
@@ -11,10 +12,18 @@ class EstadoOrdenProduccion(models.Model):
     class Meta:
         db_table = "estado_orden_produccion"
 
+class estado_linea_produccion(models.Model):
+    id_estado_linea_produccion = models.AutoField(primary_key=True)
+    descripcion = models.CharField(max_length=50)
+
+    class Meta:
+        db_table = "estado_linea_produccion"
+
 
 class LineaProduccion(models.Model):
     id_linea_produccion = models.AutoField(primary_key=True)
     descripcion = models.CharField(max_length=100)
+    id_estado_linea_produccion = models.ForeignKey(estado_linea_produccion, on_delete=models.CASCADE, db_column="id_estado_linea_produccion")
 
     class Meta:
         db_table = "linea_produccion"
@@ -48,7 +57,12 @@ class OrdenProduccion(models.Model):
         Producto, on_delete=models.CASCADE, db_column="id_producto",
         blank=True, null=True
     )
+    # Asociación opcional a la orden de venta que originó esta orden de producción
+    id_orden_venta = models.ForeignKey(
+        OrdenVenta, on_delete=models.SET_NULL, blank=True, null=True, db_column="id_orden_venta"
+    )
 
+    history = HistoricalRecords()
     class Meta:
         db_table = "orden_produccion"
 

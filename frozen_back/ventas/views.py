@@ -7,11 +7,12 @@ from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django_filters.rest_framework import DjangoFilterBackend
 from django.conf import settings
+from empleados.models import Empleado
 from stock.models import LoteProduccion  # según tu estructura
 from django.db import models
 from rest_framework import status
-from .services import gestionar_stock_y_estado_para_orden_venta, cancelar_orden_venta, facturar_orden_y_descontar_stock 
-from .models import Factura, OrdenVenta
+from .services import gestionar_stock_y_estado_para_orden_venta, cancelar_orden_venta, facturar_orden_y_descontar_stock,  revisar_ordenes_de_venta_pendientes, crear_nota_credito_y_devolver_stock
+from .models import Factura, OrdenVenta, Reclamo, Sugerencia, NotaCredito
 from django.db import transaction
 from .filters import OrdenVentaFilter
 
@@ -22,12 +23,24 @@ from .serializers import (
     OrdenVentaSerializer,
     OrdenVentaProductoSerializer,
     PrioridadSerializer,
+    ReclamoSerializer,
+    SugerenciaSerializer,
+    NotaCreditoSerializer,
+    HistoricalOrdenVentaSerializer, 
+    HistoricalNotaCreditoSerializer
 )
 
 class EstadoVentaViewSet(viewsets.ModelViewSet):
     queryset = EstadoVenta.objects.all()
     serializer_class = EstadoVentaSerializer
 
+class ReclamoViewSet(viewsets.ModelViewSet):
+    queryset = Reclamo.objects.all()
+    serializer_class = ReclamoSerializer
+
+class SugerenciaViewSet(viewsets.ModelViewSet):
+    queryset = Sugerencia.objects.all()
+    serializer_class = SugerenciaSerializer
 
 class ClienteViewSet(viewsets.ModelViewSet):
     queryset = Cliente.objects.all()
@@ -190,37 +203,100 @@ def detalle_orden_venta(request, orden_id):
 
 
 
-
 @csrf_exempt
 def actualizar_orden_venta(request):
-    print("Llegó a la función actualizar_orden_venta")
     if request.method == "PUT":
-        breakpoint() 
         try:
             data = json.loads(request.body)
-
-            # --- LÍNEAS FALTANTES AÑADIDAS AQUÍ ---
             id_orden_venta = data.get("id_orden_venta")
             if not id_orden_venta:
                 return JsonResponse({"error": "El campo 'id_orden_venta' es obligatorio"}, status=400)
-            # --- FIN DE LA CORRECCIÓN ---
+            
+            # --- INICIO DE VALIDACIÓN MANUAL ---
+            if "tipo_venta" in data:
+                tipo_venta_enviado = data.get("tipo_venta")
+                validos_tipo_venta = OrdenVenta.TipoVenta.values
+                if tipo_venta_enviado not in validos_tipo_venta:
+                    return JsonResponse({
+                        "error": f"El valor de 'tipo_venta' no es válido. Debe ser uno de: {validos_tipo_venta}"
+                    }, status=400)
+
+            if "zona" in data:
+                zona_enviada = data.get("zona")
+                validos_zona = OrdenVenta.TipoZona.values
+                if zona_enviada and zona_enviada not in validos_zona:
+                    return JsonResponse({
+                        "error": f"El valor de 'zona' no es válido. Debe ser uno de: {validos_zona}"
+                    }, status=400)
+            # --- FIN DE VALIDACIÓN MANUAL ---
 
             with transaction.atomic():
-                # Ahora 'id_orden_venta' ya existe y se puede usar aquí
                 ordenVenta = OrdenVenta.objects.get(pk=id_orden_venta)
                 
-                # ... (el resto de tu código para actualizar, eliminar y crear productos)
+                # --- INICIO DE LA MODIFICACIÓN ---
+
+                # 1. Obtenemos los IDs de los productos afectados ANTES de cualquier cambio.
+                productos_afectados_antes = set(
+                    OrdenVentaProducto.objects.filter(id_orden_venta=ordenVenta).values_list('id_producto_id', flat=True)
+                )
+
+                # 2. Actualizamos la cabecera de la orden
+                if "fecha_entrega" in data:
+                    ordenVenta.fecha_entrega = data.get("fecha_entrega")
+                if "id_prioridad" in data:
+                    ordenVenta.id_prioridad_id = data.get("id_prioridad")
+                if "tipo_venta" in data:
+                    ordenVenta.tipo_venta = data.get("tipo_venta")
+                if "calle" in data:
+                    ordenVenta.calle=data.get("calle"),
+                if "altura" in data:
+                    ordenVenta.altura=data.get("altura"),
+                if "localidad" in data:
+                    ordenVenta.localidad=data.get("localidad"),
+                if "zona" in data:    
+                    ordenVenta.zona=data.get("zona")
+
+                ordenVenta.save()
+
+                # 3. Eliminamos los productos antiguos (liberando sus reservas)
+                OrdenVentaProducto.objects.filter(id_orden_venta=ordenVenta).delete()
+
+                # 4. Insertamos los nuevos productos
+                productos_nuevos = data.get("productos", [])
+                productos_afectados_despues = set()
+                for p in productos_nuevos:
+                    producto_id = p["id_producto"]
+                    OrdenVentaProducto.objects.create(
+                        id_orden_venta=ordenVenta,
+                        id_producto_id=producto_id,
+                        cantidad=p["cantidad"]
+                    )
+                    productos_afectados_despues.add(producto_id)
                 
-                # Volvemos a ejecutar el servicio para que re-evalue todo
+                # 5. Volvemos a ejecutar el servicio de gestión sobre la orden modificada
                 gestionar_stock_y_estado_para_orden_venta(ordenVenta)
 
-            # Armar la respuesta
+                # 6. Combinamos todos los productos afectados (los que estaban y los nuevos)
+                todos_los_productos_afectados = productos_afectados_antes.union(productos_afectados_despues)
+
+            # 7. (Fuera de la transacción) Disparamos la re-evaluación para otras órdenes
+            print("Disparando re-evaluación de órdenes pendientes tras la edición...")
+            for producto_id in todos_los_productos_afectados:
+                from productos.models import Producto
+                producto = Producto.objects.get(pk=producto_id)
+                revisar_ordenes_de_venta_pendientes(producto)
+
+            # --- FIN DE LA MODIFICACIÓN ---
+
+            # Armar la respuesta final
             serializer = OrdenVentaSerializer(ordenVenta)
             return JsonResponse(serializer.data, status=200)
 
         except OrdenVenta.DoesNotExist:
             return JsonResponse({"error": "Orden de venta no encontrada"}, status=404)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return JsonResponse({"error": str(e)}, status=400)
 
     return JsonResponse({"error": "Método no permitido"}, status=405)
@@ -290,13 +366,43 @@ def crear_orden_venta(request):
         try:
             data = json.loads(request.body)
             estado_creada = EstadoVenta.objects.get(descripcion__iexact="Creada")
+            
+            # --- INICIO DE VALIDACIÓN MANUAL ---
+            tipo_venta_enviado = data.get("tipo_venta")
+            zona_enviada = data.get("zona")
+            # 1. Validar tipo_venta
+            validos_tipo_venta = OrdenVenta.TipoVenta.values
+            if tipo_venta_enviado not in validos_tipo_venta:
+                return JsonResponse({
+                    "error": f"El valor de 'tipo_venta' no es válido. Debe ser uno de: {validos_tipo_venta}"
+                }, status=400)
 
-            with transaction.atomic(): # Envolvemos todo en una transacción
+            # 2. Validar zona (solo si se envió)
+            validos_zona = OrdenVenta.TipoZona.values
+            if zona_enviada and zona_enviada not in validos_zona:
+                return JsonResponse({
+                    "error": f"El valor de 'zona' no es válido. Debe ser uno de: {validos_zona}"
+                }, status=400)
+            # --- FIN DE VALIDACIÓN MANUAL ---
+            
+            with transaction.atomic():
+                # Validar empleado si se envió
+                id_empleado = data.get("id_empleado")
+                if id_empleado and not Empleado.objects.filter(pk=id_empleado).exists():
+                    return JsonResponse({"error": "Empleado no encontrado"}, status=400)
+
+                # Crear la orden de venta directamente
                 orden_venta = OrdenVenta.objects.create(
                     id_cliente_id=data.get("id_cliente"),
                     id_estado_venta=estado_creada,
                     id_prioridad_id=data.get("id_prioridad"),
-                    fecha_entrega=data.get("fecha_entrega")
+                    fecha_entrega=data.get("fecha_entrega"),
+                    tipo_venta=data.get("tipo_venta"),
+                    calle=data.get("calle"),
+                    altura=data.get("altura"),
+                    localidad=data.get("localidad"),
+                    zona=data.get("zona"),
+                    id_empleado_id=id_empleado if id_empleado else None
                 )
 
                 productos = data.get("productos", [])
@@ -529,3 +635,63 @@ def cambiar_estado_orden_venta(request):
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 """
+
+
+class NotaCreditoViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para crear y ver Notas de Crédito.
+    La creación de una NC dispara la devolución de stock.
+    """
+    queryset = NotaCredito.objects.all().order_by('-fecha')
+    serializer_class = NotaCreditoSerializer
+
+    def create(self, request, *args, **kwargs):
+        """
+        Sobre-escribe el método POST para crear una NC.
+        Espera: { "id_factura": <id>, "motivo": "<texto>" }
+        """
+        id_factura = request.data.get('id_factura')
+        motivo = request.data.get('motivo')
+
+        if not id_factura:
+            return Response({"error": "El campo 'id_factura' es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            factura = Factura.objects.get(pk=id_factura)
+            orden_venta = factura.id_orden_venta
+            
+            # Llamamos al servicio que hace toda la magia
+            nota_credito = crear_nota_credito_y_devolver_stock(orden_venta, motivo)
+            
+            # Devolvemos la NC creada
+            serializer = self.get_serializer(nota_credito)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        except (Factura.DoesNotExist, OrdenVenta.DoesNotExist):
+            return Response({"error": "La factura o la orden de venta asociada no existen."}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            # Captura errores del servicio (ej. "Ya existe NC", "Orden no pagada")
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        
+
+
+
+class HistorialOrdenVentaViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet de solo-lectura para ver el log global de todas las Órdenes de Venta.
+    """
+    queryset = OrdenVenta.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalOrdenVentaSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_estado_venta', 'id_cliente']
+    search_fields = ['history_user__usuario', 'id_cliente__nombre']
+
+class HistorialNotaCreditoViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet de solo-lectura para ver el log global de todas las Notas de Crédito.
+    """
+    queryset = NotaCredito.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalNotaCreditoSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_factura']
+    search_fields = ['history_user__usuario', 'motivo']

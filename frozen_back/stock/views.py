@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import api_view  # <- IMPORT IMPORTANTE
 from django_filters.rest_framework import DjangoFilterBackend
-from stock.services import get_stock_disponible_para_producto,  verificar_stock_y_enviar_alerta
+from stock.services import get_stock_disponible_para_producto,  verificar_stock_y_enviar_alerta, get_stock_disponible_todos_los_productos
 from django.views.decorators.csrf import csrf_exempt
 from produccion.services import procesar_ordenes_en_espera
 from django.db.models import Sum
@@ -26,7 +26,9 @@ from .serializers import (
     EstadoLoteMateriaPrimaSerializer,
     LoteProduccionSerializer,
     LoteMateriaPrimaSerializer,
-    LoteProduccionMateriaSerializer
+    LoteProduccionMateriaSerializer,
+    HistoricalLoteProduccionSerializer, 
+    HistoricalLoteMateriaPrimaSerializer
 )
 
 # ----- Estados -----
@@ -51,6 +53,12 @@ class LoteProduccionViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter, DjangoFilterBackend]
     search_fields = ["id_producto__nombre"]
     filterset_fields = ["id_producto", "id_estado_lote_produccion", "fecha_produccion", "fecha_vencimiento"]
+
+@api_view(["GET"])
+def obtener_lotes_de_materia_prima(request, id_materia_prima):
+    lotes = LoteMateriaPrima.objects.filter(id_materia_prima=id_materia_prima)
+    serializer = LoteMateriaPrimaSerializer(lotes, many=True)
+    return Response(serializer.data)
 
 class LoteMateriaPrimaViewSet(viewsets.ModelViewSet):
     queryset = LoteMateriaPrima.objects.all()
@@ -94,6 +102,21 @@ def cantidad_total_producto_view(request, id_producto):
         {"id_producto": id_producto, "cantidad_disponible": total},
         status=status.HTTP_200_OK
     )
+
+
+@api_view(["GET"])
+def lista_cantidad_total_productos_view(request):
+    """
+    Endpoint que devuelve la cantidad total disponible de TODOS los productos.
+    """
+    # 1. Llamamos a la nueva función helper
+    stock_data = get_stock_disponible_todos_los_productos()
+    
+    # 2. La función ya devuelve un QuerySet de diccionarios, 
+    #    listo para ser serializado por la Response.
+    return Response(stock_data, status=status.HTTP_200_OK)
+
+
 
 @api_view(["GET"])
 def cantidad_total_materia_view(request, id_producto):
@@ -224,7 +247,7 @@ def listar_materias_primas(request):
     if request.method != "GET":
         return JsonResponse({"error": "Método no permitido"}, status=405)
 
-    # buscamos el estado "Disponible"
+    # Buscamos el estado "Disponible"
     try:
         estado_disponible = EstadoLoteMateriaPrima.objects.get(descripcion__iexact="disponible")
     except EstadoLoteMateriaPrima.DoesNotExist:
@@ -234,21 +257,47 @@ def listar_materias_primas(request):
     data = []
 
     for materia in materias:
-        # sumamos solo los lotes disponibles
-        total = (
-            LoteMateriaPrima.objects
-            .filter(
-                id_materia_prima=materia.id_materia_prima,
-                id_estado_lote_materia_prima=estado_disponible.id_estado_lote_materia_prima
-            )
-            .aggregate(total=Sum('cantidad'))['total']
+        # Obtenemos todos los lotes disponibles para esta materia prima
+        lotes_disponibles = LoteMateriaPrima.objects.filter(
+            id_materia_prima=materia.id_materia_prima,
+            id_estado_lote_materia_prima=estado_disponible.id_estado_lote_materia_prima
         )
+        
+        # Calculamos la suma de cantidad_disponible para todos los lotes
+        cantidad_disponible_total = 0
+        for lote in lotes_disponibles:
+            cantidad_disponible_total += lote.cantidad_disponible
+            # cantidad_reservada += lote.cantidad_reservada()
 
         data.append({
             "id_materia_prima": materia.id_materia_prima,
             "nombre": materia.nombre,
             "unidad_medida": materia.id_unidad.descripcion,
-            "cantidad_disponible": total or 0
+            "umbral_minimo": materia.umbral_minimo,
+            "cantidad_disponible": max(cantidad_disponible_total, 0),  # Evitamos valores negativos
         })
 
     return JsonResponse(data, safe=False)
+
+
+
+
+class HistorialLoteProduccionViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint para ver el historial de cambios de los Lotes de Producción.
+    """
+    queryset = LoteProduccion.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalLoteProduccionSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_producto', 'id_estado_lote_produccion']
+    search_fields = ['history_user__usuario', 'id_producto__nombre']
+
+class HistorialLoteMateriaPrimaViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoint para ver el historial de cambios de los Lotes de Materia Prima.
+    """
+    queryset = LoteMateriaPrima.history.model.objects.all().order_by('-history_date')
+    serializer_class = HistoricalLoteMateriaPrimaSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['history_type', 'history_user', 'id_materia_prima', 'id_estado_lote_materia_prima']
+    search_fields = ['history_user__usuario', 'id_materia_prima__nombre']

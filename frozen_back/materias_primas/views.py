@@ -3,8 +3,8 @@ from django.shortcuts import render
 # Create your views here.
 from rest_framework import viewsets, filters
 from django_filters.rest_framework import DjangoFilterBackend
-from .models import TipoMateriaPrima, MateriaPrima
-from .serializers import TipoMateriaPrimaSerializer, MateriaPrimaSerializer
+from .models import Proveedor, TipoMateriaPrima, MateriaPrima
+from .serializers import TipoMateriaPrimaSerializer, MateriaPrimaSerializer, proveedorSerializer
 
 # ------------------------------
 # TipoMateriaPrima
@@ -25,3 +25,10 @@ class MateriaPrimaViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["id_tipo_materia_prima", "id_unidad", "nombre"]
     search_fields = ["nombre", "descripcion", "id_tipo_materia_prima__descripcion"]
+
+class ProveedorViewSet(viewsets.ModelViewSet):
+    queryset = Proveedor.objects.all()
+    serializer_class = proveedorSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ["nombre", "contacto"]
+    search_fields = ["nombre", "contacto", "telefono", "email"]
