@@ -65,9 +65,11 @@ class OrdenVentaViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='no-pagadas-o-facturadas')
     def get_no_pagadas_o_facturadas(self, request):
         # Filtra todas las órdenes que NO tengan estado "Pagada" o "Facturada"
-        ordenes = OrdenVenta.objects.exclude(
-            id_estado_venta__descripcion__in=["Pagada", "Facturada", "Despachando", "Despachado"]
+        ordenes = OrdenVenta.objects.filter(
+            id_estado_venta=1
         )
+
+
 
         serializer = self.get_serializer(ordenes, many=True)
         return Response(serializer.data)
