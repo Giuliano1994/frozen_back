@@ -37,4 +37,4 @@ class ImagenProductoViewSet(viewsets.ModelViewSet):
 
 class ProductoLiteListView(generics.ListAPIView):
     queryset = Producto.objects.all()
-    serializer_class = ProductoLiteSerializer
+    serializer_class = ProductoSerializer
