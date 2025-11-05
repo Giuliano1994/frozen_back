@@ -24,4 +24,8 @@ urlpatterns = [
     path('desperdicio/por_producto/', 
          views.ReporteDesperdicioPorProducto.as_view(), 
          name='reporte-desperdicio-producto'),
+
+     path('desperdicio/tasa/', 
+         views.ReporteTasaDeDesperdicio.as_view(), 
+         name='reporte-desperdicio-tasa'),
 ]

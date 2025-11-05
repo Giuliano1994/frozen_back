@@ -11,7 +11,7 @@ from produccion.models import OrdenDeTrabajo, NoConformidad, EstadoOrdenTrabajo
 from stock.models import LoteProduccionMateria
 from productos.models import Producto
 from materias_primas.models import MateriaPrima
-from django.db.models import Sum, F, Count, Value, CharField
+from django.db.models import Sum, F, Count, Value, CharField, FloatField
 from django.db.models.functions import TruncDate, Coalesce
 
 
@@ -236,3 +236,51 @@ class ReporteDesperdicioPorProducto(APIView):
 
         # Salida: [{"producto_nombre": "Producto B", "total_desperdiciado": 80}, ...]
         return Response(reporte)
+    
+
+class ReporteTasaDeDesperdicio(APIView):
+
+    def get(self, request, *args, **kwargs):
+        fecha_desde, fecha_hasta = parsear_fechas(request)
+        if fecha_desde is None:
+            return Response({"error": "Formato de fecha inválido. Usar YYYY-MM-DD."}, status=400)
+
+        # 1. CALCULAR EL TOTAL DESPERDICIADO (NUMERADOR)
+        total_desperdiciado_query = NoConformidad.objects.filter(
+            id_orden_produccion__fecha_creacion__range=(fecha_desde, fecha_hasta)
+        ).aggregate(
+            total_desperdiciado=Coalesce(
+                Sum('cant_desperdiciada'), 
+                Value(0.0), 
+                output_field=FloatField() 
+            )
+        )
+        total_desperdiciado = total_desperdiciado_query.get('total_desperdiciado', 0.0)
+
+        # 2. CALCULAR EL TOTAL PRODUCIDO/PROGRAMADO (DENOMINADOR)
+        total_producido_query = OrdenDeTrabajo.objects.filter(
+            hora_inicio_programada__range=(fecha_desde, fecha_hasta)
+        ).aggregate(
+            total_programado=Coalesce(
+                Sum('cantidad_programada'), 
+                Value(0.0),
+                output_field=FloatField() 
+            )
+        )
+        total_programado = total_producido_query.get('total_programado', 0.0)
+        
+        # ... (resto del cálculo de la tasa) ...
+        tasa_desperdicio = 0.0
+        
+        if total_programado > 0:
+            tasa_desperdicio = (total_desperdiciado / total_programado) * 100.0
+
+        resultado = {
+            "fecha_desde": fecha_desde.strftime('%Y-%m-%d'),
+            "fecha_hasta": fecha_hasta.strftime('%Y-%m-%d'),
+            "total_programado": total_programado,
+            "total_desperdiciado": total_desperdiciado,
+            "tasa_desperdicio_porcentaje": round(tasa_desperdicio, 2)
+        }
+
+        return Response(resultado)
