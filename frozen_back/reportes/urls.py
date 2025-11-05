@@ -28,4 +28,8 @@ urlpatterns = [
      path('desperdicio/tasa/', 
          views.ReporteTasaDeDesperdicio.as_view(), 
          name='reporte-desperdicio-tasa'),
+
+     path('produccion/cumplimiento-plan/', 
+         views.ReporteCumplimientoPlan.as_view(), 
+         name='reporte-cumplimiento-plan'),
 ]

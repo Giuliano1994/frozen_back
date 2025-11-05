@@ -14,6 +14,8 @@ from materias_primas.models import MateriaPrima
 from django.db.models import Sum, F, Count, Value, CharField, FloatField
 from django.db.models.functions import TruncDate, Coalesce
 
+from django.utils import timezone
+
 
 # Helper para parsear fechas (puedes mejorarlo)
 def parsear_fechas(request):
@@ -281,6 +283,61 @@ class ReporteTasaDeDesperdicio(APIView):
             "total_programado": total_programado,
             "total_desperdiciado": total_desperdiciado,
             "tasa_desperdicio_porcentaje": round(tasa_desperdicio, 2)
+        }
+
+        return Response(resultado)
+    
+
+class ReporteCumplimientoPlan(APIView):
+    """
+    API para calcular el Porcentaje de Cumplimiento del Plan (PCP).
+    PCP = (Total Producido / Total Planificado) * 100
+    """
+    def get(self, request, *args, **kwargs):
+        fecha_desde, fecha_hasta = parsear_fechas(request)
+        if fecha_desde is None:
+            return Response({"error": "Formato de fecha inválido. Usar YYYY-MM-DD."}, status=400)
+
+        # 1. CALCULAR EL TOTAL PLANIFICADO (DENOMINADOR)
+        total_planificado_query = OrdenDeTrabajo.objects.filter(
+            hora_inicio_programada__range=(fecha_desde, fecha_hasta)
+        ).aggregate(
+            total_planificado=Coalesce(
+                Sum('cantidad_programada'), 
+                Value(0.0), 
+                output_field=FloatField() # Soluciona FieldError
+            )
+        )
+        total_planificado = total_planificado_query.get('total_planificado', 0.0)
+
+        # 2. CALCULAR EL TOTAL REAL PRODUCIDO (NUMERADOR)
+        # Se filtra por la descripción del estado (relación de clave foránea)
+        total_producido_query = OrdenDeTrabajo.objects.filter(
+            hora_inicio_programada__range=(fecha_desde, fecha_hasta),
+            # ¡CORRECCIÓN del FieldError! Usamos la relación para filtrar por el nombre del estado
+            id_estado_orden_trabajo__descripcion='Completada' 
+        ).aggregate(
+            total_producido=Coalesce(
+                Sum('cantidad_producida'), 
+                Value(0.0),
+                output_field=FloatField() # Soluciona FieldError
+            )
+        )
+        total_producido = total_producido_query.get('total_producido', 0.0)
+
+        # 3. CÁLCULO DEL PCP
+        pcp = 0.0
+        
+        if total_planificado > 0:
+            pcp = (total_producido / total_planificado) * 100.0
+
+        # 4. PREPARAR RESPUESTA
+        resultado = {
+            "fecha_desde": fecha_desde.strftime('%Y-%m-%d'),
+            "fecha_hasta": fecha_hasta.strftime('%Y-%m-%d'),
+            "total_planificado": total_planificado,
+            "total_producido": total_producido,
+            "porcentaje_cumplimiento_plan": round(pcp, 2)
         }
 
         return Response(resultado)
