@@ -7,7 +7,7 @@ from datetime import datetime, timedelta # Asegúrate de importar timedelta si u
 
 # --- ¡IMPORTANTE! ---
 # Ahora importas los modelos desde sus apps correspondientes
-from produccion.models import OrdenDeTrabajo, NoConformidad, EstadoOrdenTrabajo
+from produccion.models import OrdenDeTrabajo, NoConformidad, EstadoOrdenTrabajo, LineaProduccion, estado_linea_produccion
 from stock.models import LoteProduccionMateria
 from productos.models import Producto
 from materias_primas.models import MateriaPrima
@@ -341,3 +341,34 @@ class ReporteCumplimientoPlan(APIView):
         }
 
         return Response(resultado)
+    
+class LineasProduccionYEstado(APIView):
+    """
+    Devuelve la lista de TODAS las líneas de producción, mostrando su nombre 
+    y la descripción de su estado actual, sin importar si están activas o no.
+    """
+    def get(self, request, *args, **kwargs):
+        
+        # Obtenemos TODAS las líneas de producción
+        lineas = LineaProduccion.objects.all().values(
+            # Proyectamos el nombre de la línea
+            nombre_linea=F('descripcion'), 
+            
+            # Obtenemos la descripción del estado a través de la clave foránea.
+            # Usamos Coalesce para manejar si, hipotéticamente, el estado fuera NULL
+            estado_actual=Coalesce(
+                F('id_estado_linea_produccion__descripcion'), 
+                Value('Sin Estado Asignado'),
+                output_field=CharField()
+            )
+        ).order_by('nombre_linea')
+        
+        """
+        Salida de Ejemplo:
+        [
+            {"nombre_linea": "Línea Ensamblaje A", "estado_actual": "Activa"},
+            {"nombre_linea": "Línea Corte Láser", "estado_actual": "Parada"},
+            {"nombre_linea": "Línea Empaque", "estado_actual": "Mantenimiento"}
+        ]
+        """
+        return Response(list(lineas))
