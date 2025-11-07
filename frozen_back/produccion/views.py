@@ -190,52 +190,71 @@ class OrdenDeTrabajoViewSet(viewsets.ModelViewSet):
     @transaction.atomic
     def finalizar_ot(self, request, pk=None):
         """ 
-        Cambia el estado a 'Completada', calcula hora_fin_real (tiempo teórico + pausas). 
+        Cambia el estado a 'Completada', calcula hora_fin_real (tiempo teórico + pausas)
+        y establece la cantidad_producida (Programada - Desperdicio).
         """
         ot = get_object_or_404(OrdenDeTrabajo, pk=pk)
         
-        # Validaciones
+        # Validaciones (Mantenidas)
         if ot.id_estado_orden_trabajo.descripcion.lower() != 'en progreso':
             return Response({'error': 'La OT debe estar en estado "En Progreso" para finalizar.'}, status=status.HTTP_400_BAD_REQUEST)
         if not ot.hora_inicio_real:
             return Response({'error': 'La OT no tiene hora de inicio real registrada.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 1. Validar Pausas Activas
+        # 1. Validar Pausas Activas (Mantenido)
         if ot.pausas.filter(activa=True).exists():
-             return Response({'error': 'No se puede finalizar. Hay una pausa activa que debe ser reanudada.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'No se puede finalizar. Hay una pausa activa que debe ser reanudada.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 2. CALCULAR LA DURACIÓN PLANIFICADA EN MINUTOS (CORRECCIÓN DEL ERROR)
+        # 2. CALCULAR LA DURACIÓN PLANIFICADA EN MINUTOS (Mantenido)
         if not ot.hora_fin_programada or not ot.hora_inicio_programada:
-             return Response({'error': 'La OT no tiene un horario planificado completo (inicio/fin).'}, status=status.HTTP_400_BAD_REQUEST)
-             
-        # Diferencia entre hora fin planificada y hora inicio planificada
+            return Response({'error': 'La OT no tiene un horario planificado completo (inicio/fin).'}, status=status.HTTP_400_BAD_REQUEST)
+            
         duracion_planificada_delta = ot.hora_fin_programada - ot.hora_inicio_programada
-        
-        # Convertir el objeto timedelta a minutos totales
         duracion_planificada_minutos = duracion_planificada_delta.total_seconds() / 60
         
-        # 3. Sumar el tiempo total de pausas (Solo suma las no activas)
+        # 3. Sumar el tiempo total de pausas (Mantenido)
         tiempo_pausa_total_minutos = ot.pausas.filter(activa=False).aggregate(
             total_pausa=Sum('duracion_minutos')
         )['total_pausa'] or 0
         
-        # 4. Calcular hora_fin_real
-        # tiempo_operacion_total = Duración Planificada + Tiempo de Pausa Registrado
+        # 4. Calcular hora_fin_real (Mantenido)
         tiempo_operacion_total = duracion_planificada_minutos + tiempo_pausa_total_minutos
-        
-        # hora_fin_real = hora_inicio_real + tiempo_operacion_total
         ot.hora_fin_real = ot.hora_inicio_real + timedelta(minutes=tiempo_operacion_total)
 
-        # 5. Actualizar estado y guardar
+
+        # =================================================================
+        # ⚡ NUEVA LÓGICA: CALCULAR CANTIDAD PRODUCIDA REAL
+        # =================================================================
+
+        # 4.1. Sumar el desperdicio total registrado en las No Conformidades de esta OT
+        total_desperdicio_query = ot.noconformidad_set.aggregate(
+            total_desperdicio=Sum('cant_desperdiciada')
+        )
+        # Coalesce: Si no hay desperdicio (la suma es None), se considera 0
+        total_desperdicio = total_desperdicio_query.get('total_desperdicio') or 0
+
+        # 4.2. Cantidad Producida = Cantidad Programada - Total Desperdicio
+        cantidad_producida_real = ot.cantidad_programada - total_desperdicio
+        
+        # Aseguramos que la cantidad no sea negativa
+        ot.cantidad_producida = max(0, cantidad_producida_real)
+        
+        # =================================================================
+
+        # 5. Actualizar estado y guardar (Mantenido)
         nuevo_estado = self._get_estado('Completada')
         ot.id_estado_orden_trabajo = nuevo_estado
-        ot.save()
+        ot.save() # Se guardan todos los cambios, incluyendo hora_fin_real y cantidad_producida
         
-        # 6. Llama al servicio de verificación de OP padre
+        # 6. Llama al servicio de verificación de OP padre (Mantenido)
         if ot.id_orden_produccion:
-             verificar_y_actualizar_op_segun_ots(ot.id_orden_produccion.id_orden_produccion)
+            verificar_y_actualizar_op_segun_ots(ot.id_orden_produccion.id_orden_produccion)
 
-        return Response({'message': 'OT finalizada correctamente'}, status=status.HTTP_200_OK)
+        return Response({
+            'message': 'OT finalizada correctamente',
+            'cantidad_producida': ot.cantidad_producida,
+            'total_desperdicio_registrado': total_desperdicio
+        }, status=status.HTTP_200_OK)
     # =================================================================
     # 5. ACCIÓN REGISTRAR NO CONFORMIDAD (NUEVO)
     # =================================================================
