@@ -338,7 +338,7 @@ class ReporteCumplimientoPlan(APIView):
             hora_fin_real__isnull=False, 
         ).aggregate(
             total_cumplido_adherencia=Coalesce(
-                Sum('cantidad_programada'), 
+                Sum('cantidad_producida'), 
                 Value(0.0),
                 output_field=FloatField()
             )
@@ -407,7 +407,7 @@ class ReporteCumplimientoPlanMensual(APIView):
             total_cumplido_adherencia=Coalesce(
                 Sum(
                     Case(
-                        When(cumplio_fecha=True, then='cantidad_programada'),
+                        When(cumplio_fecha=True, then='cantidad_producida'),
                         default=Value(0),
                         output_field=FloatField()
                     )
@@ -479,7 +479,7 @@ class ReporteCumplimientoPlanSemanal(APIView):
             total_cumplido_adherencia=Coalesce(
                 Sum(
                     Case(
-                        When(cumplio_fecha=True, then='cantidad_programada'),
+                        When(cumplio_fecha=True, then='cantidad_producida'),
                         default=Value(0),
                         output_field=FloatField()
                     )
