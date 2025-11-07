@@ -86,22 +86,6 @@ class EstadoOrdenTrabajo(models.Model):
         return self.descripcion
     
 
-class NoConformidad(models.Model):
-        id_no_conformidad = models.AutoField(primary_key=True)
-        id_orden_produccion = models.ForeignKey(OrdenProduccion, on_delete=models.CASCADE, db_column="id_orden_produccion")
-        """
-        id_orden_trabajo = models.ForeignKey(
-            OrdenDeTrabajo,  # Vincular al "hijo"
-            on_delete=models.CASCADE, 
-            db_column="id_orden_trabajo"
-        )
-        """
-        descripcion = models.CharField(max_length=100)
-        cant_desperdiciada = models.IntegerField()
-
-        class Meta:
-            db_table = "no_conformidades"
-
 
 class OrdenDeTrabajo(models.Model):
     id_orden_trabajo = models.AutoField(primary_key=True)
@@ -152,6 +136,43 @@ class OrdenDeTrabajo(models.Model):
     def __str__(self):
         return f"OT-{self.id_orden_trabajo} (OP: {self.id_orden_produccion.id_orden_produccion})"
     
+    
+class TipoNoConformidad(models.Model):
+    id_tipo_no_conformidad = models.AutoField(primary_key=True)
+    nombre = models.CharField(max_length=100, unique=True)
+    descripcion = models.TextField(blank=True, null=True)
+
+    class Meta:
+        db_table = "tipo_no_conformidad"
+        verbose_name = "Tipo de No Conformidad"
+        verbose_name_plural = "Tipos de No Conformidades"
+    
+    def __str__(self):
+        return self.nombre
+    
+    
+class NoConformidad(models.Model):
+        id_no_conformidad = models.AutoField(primary_key=True)
+        
+        id_orden_trabajo = models.ForeignKey(
+            OrdenDeTrabajo,  # Vincular al "hijo"
+            on_delete=models.CASCADE, 
+            db_column="id_orden_trabajo"
+        )
+
+        id_tipo_no_conformidad = models.ForeignKey(
+        TipoNoConformidad,
+        on_delete=models.PROTECT, # Recomendado: No borrar el tipo si está siendo usado
+        db_column="id_tipo_no_conformidad",
+        related_name="no_conformidades",
+        verbose_name="Tipo de No Conformidad"
+    )
+        
+        cant_desperdiciada = models.IntegerField()
+
+        class Meta:
+            db_table = "no_conformidades"
+
 
 class PausaOT(models.Model):
     id_pausa = models.AutoField(primary_key=True)
