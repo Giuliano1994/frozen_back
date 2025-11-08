@@ -338,48 +338,64 @@ def descontar_stock_reservado(orden):
 
 
 
-def calcular_porcentaje_desperdicio_historico(id_producto: int) -> float:
+def calcular_porcentaje_desperdicio_historico(id_producto: int, from_date=None, limit=10) -> float:
     """
-    Calcula el porcentaje de desperdicio promedio basado en las últimas 10
-    órdenes de producción finalizadas para un producto.
+    Calcula el porcentaje histórico de desperdicio usando ORDENES DE TRABAJO,
+    no órdenes de producción.
 
-    Retorna solo el porcentaje de desperdicio (como un float, ej: 10.5).
+    Ahora soporta:
+    ✅ Filtrar desde una fecha específica
+    ✅ Especificar cuántas OP analizar (limit)
     """
+
     try:
-        # Busca el estado 'Finalizada'
         estado_finalizada = EstadoOrdenProduccion.objects.get(descripcion__iexact="Finalizada")
     except EstadoOrdenProduccion.DoesNotExist:
-        print("Advertencia: No se encontró el estado 'Finalizada'. No se puede calcular desperdicio.")
-        return 0.0 # Devolver 0% si no podemos calcular
-
-    # Obtener las últimas 10 órdenes de producción finalizadas para ese producto
-    ultimas_ops_finalizadas = OrdenProduccion.objects.filter(
-        id_producto_id=id_producto,
-        id_estado_orden_produccion=estado_finalizada
-    ).order_by('-fecha_creacion')[:10]
-
-    if not ultimas_ops_finalizadas:
-        print(f"No hay historial de OPs finalizadas para producto {id_producto}. No se puede calcular desperdicio.")
         return 0.0
 
-    # Calcular el total producido y desperdiciado en esas órdenes
-    total_producido_historico = 0
-    total_desperdiciado_historico = 0
+    # ----- 1. Buscar OP finalizadas del producto -----
+    qs = OrdenProduccion.objects.filter(
+        id_producto_id=id_producto,
+        id_estado_orden_produccion=estado_finalizada
+    )
 
-    for op in ultimas_ops_finalizadas:
-        total_producido_historico += op.cantidad
-        desperdicio_op = NoConformidad.objects.filter(
-            id_orden_produccion=op
-        ).aggregate(total=models.Sum('cant_desperdiciada'))['total'] or 0
-        total_desperdiciado_historico += desperdicio_op
+    if from_date:
+        qs = qs.filter(fecha_creacion__date__gte=from_date)
 
-    # Calcular el porcentaje de desperdicio promedio
-    if total_producido_historico > 0:
-        porcentaje_desperdicio = (total_desperdiciado_historico / total_producido_historico) * 100.0 # Usar 100.0 para resultado float
-    else:
-        porcentaje_desperdicio = 0.0
+    # Aplicar límite
+    ops = qs.order_by("-fecha_creacion")[:limit]
 
-    return round(porcentaje_desperdicio, 2) # Devolver float redondeado
+    if not ops:
+        return 0.0
+
+    # ----- 2. Calcular producción total y desperdicio total desde OTs -----
+    total_producido = 0
+    total_desperdicio = 0
+
+    for op in ops:
+        # Todas las OTs de la OP
+        ots = op.ordenes_de_trabajo.all()
+
+        # Sumar producción
+        for ot in ots:
+            # Si ya se finalizó, tomar la real; si no, tomar programada
+            producido_ot = ot.cantidad_producida if ot.cantidad_producida is not None else ot.cantidad_programada
+            total_producido += producido_ot
+
+            # Sumar desperdicio de esta OT
+            desperdicio_ot = ot.no_conformidades.aggregate(
+                total=models.Sum("cant_desperdiciada")
+            )["total"] or 0
+
+            total_desperdicio += desperdicio_ot
+
+    # ----- 3. Evitar división por cero -----
+    if total_producido <= 0:
+        return 0.0
+
+    # ----- 4. Calcular porcentaje -----
+    porcentaje = (total_desperdicio / total_producido) * 100.0
+    return round(porcentaje, 2)
 
 
 
