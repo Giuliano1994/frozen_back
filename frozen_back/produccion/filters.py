@@ -1,5 +1,5 @@
 import django_filters
-from .models import EstadoOrdenProduccion, OrdenProduccion
+from .models import EstadoOrdenProduccion, OrdenDeTrabajo, OrdenProduccion
 
 
 class OrdenProduccionFilter(django_filters.FilterSet):
@@ -53,3 +53,24 @@ class OrdenProduccionFilter(django_filters.FilterSet):
                 pass
 
         return queryset
+    
+class OrdenDeTrabajoFilter(django_filters.FilterSet):
+    # Ejemplo de filtro de rango de fecha más robusto
+    fecha_inicio_desde = django_filters.DateFilter(
+        field_name='hora_inicio_programada', 
+        lookup_expr='gte'
+    )
+    fecha_inicio_hasta = django_filters.DateFilter(
+        field_name='hora_inicio_programada', 
+        lookup_expr='lte'
+    )
+
+    class Meta:
+        model = OrdenDeTrabajo
+        fields = [
+            'id_linea_produccion',
+            'id_estado_orden_trabajo',
+            'id_orden_produccion',
+            'fecha_inicio_desde',
+            'fecha_inicio_hasta',
+        ]

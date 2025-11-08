@@ -20,7 +20,7 @@ from .serializers import (
     TipoNoConformidadSerializer,
     NoConformidadCreateSerializer
 )
-from .filters import OrdenProduccionFilter
+from .filters import OrdenDeTrabajoFilter, OrdenProduccionFilter
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Sum
@@ -64,6 +64,21 @@ class OrdenDeTrabajoViewSet(viewsets.ModelViewSet):
         'id_estado_orden_trabajo'
     )
     serializer_class = OrdenDeTrabajoSerializer
+    
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    search_fields = [
+        'id_linea_produccion__descripcion', 
+        'id_estado_orden_trabajo__descripcion', 
+        'id_orden_produccion__id_orden_produccion' 
+    ]
+    ordering_fields = [
+        'hora_inicio_programada', 
+        'cantidad_programada', 
+        'id_estado_orden_trabajo__descripcion'
+    ]
+    ordering = ['hora_inicio_programada'] # Orden por defecto
+
+    filterset_class = OrdenDeTrabajoFilter
     
     # --- UTILITY: Obtener Estado ---
     def _get_estado(self, descripcion):
