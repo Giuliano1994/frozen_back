@@ -1,4 +1,4 @@
-from datetime import date, time
+from time import timezone
 from django.shortcuts import render
 from rest_framework import viewsets, filters, status
 from rest_framework.response import Response
@@ -105,7 +105,7 @@ class OrdenDespachoViewSet(viewsets.ViewSet):
                 if orden_venta.id_orden_venta in ordenes_entregadas:
                     # ✅ Entregada
                     orden_venta.id_estado_venta = estado_despachado
-                    orden_venta.fecha_entrega = date.today()
+                    orden_venta.fecha_entrega = timezone.localdate()
                     relacion.id_estado_despacho = estado_despacho_despachado
                 else:
                     # ❌ No entregada
