@@ -152,7 +152,7 @@ def gestionar_stock_y_estado_para_orden_venta(orden_venta: OrdenVenta):
                             id_estado_orden_produccion=estado_en_espera,
                             id_producto=linea.id_producto,
                             id_orden_venta=orden_venta,
-                            id_linea_produccion=(producto_linea.id_linea_produccion if producto_linea and getattr(producto_linea, 'id_linea_produccion', None) else None),
+                            #id_linea_produccion=(producto_linea.id_linea_produccion if producto_linea and getattr(producto_linea, 'id_linea_produccion', None) else None),
                             id_supervisor=default_supervisor,
                         )
                         print(f"Creada OrdenProduccion #{orden_prod.id_orden_produccion} para producir {cantidad_a_producir} unidades (múltiplo de {cant_por_hora}) asociada a OrdenVenta #{orden_venta.pk}")
