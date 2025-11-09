@@ -1,9 +1,9 @@
 from django.shortcuts import render
 from rest_framework import viewsets, generics
 
-from .models import TipoProducto, Unidad, Producto, ImagenProducto
+from .models import TipoProducto, Unidad, Producto, ImagenProducto, Combo
 from .serializers import TipoProductoSerializer, UnidadSerializer, ProductoSerializer, ProductoLiteSerializer, ImagenProductoSerializer, ProductoDetalleSerializer
-
+from .serializers import ComboSerializer, ComboCreateSerializer
 
 class TipoProductoViewSet(viewsets.ModelViewSet):
     queryset = TipoProducto.objects.all()
@@ -38,3 +38,14 @@ class ImagenProductoViewSet(viewsets.ModelViewSet):
 class ProductoLiteListView(generics.ListAPIView):
     queryset = Producto.objects.all()
     serializer_class = ProductoSerializer
+
+
+
+
+class ComboViewSet(viewsets.ModelViewSet):
+    queryset = Combo.objects.all().prefetch_related("productos")
+
+    def get_serializer_class(self):
+        if self.action in ["create", "update", "partial_update"]:
+            return ComboCreateSerializer
+        return ComboSerializer

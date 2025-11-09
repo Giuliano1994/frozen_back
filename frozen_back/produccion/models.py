@@ -95,17 +95,16 @@ class OrdenDeTrabajo(models.Model):
         OrdenProduccion, 
         on_delete=models.CASCADE, 
         db_column="id_orden_produccion",
-        related_name="ordenes_de_trabajo" # Permite OP.ordenes_de_trabajo.all()
+        related_name="ordenes_de_trabajo"
     )
     id_linea_produccion = models.ForeignKey(
         LineaProduccion, 
-        on_delete=models.PROTECT,  # Evita borrar una línea con trabajo asignado
+        on_delete=models.PROTECT,
         db_column="id_linea_produccion",
-        related_name="ordenes_de_trabajo" # Permite LP.ordenes_de_trabajo.all()
+        related_name="ordenes_de_trabajo"
     )
     
-    # --- Datos de Planificación (El "Fragmento") ---
-    # (Estos campos los llenará tu algoritmo de planificación)
+    # --- Datos de Planificación ---
     cantidad_programada = models.IntegerField()
     hora_inicio_programada = models.DateTimeField()
     hora_fin_programada = models.DateTimeField()
@@ -115,27 +114,36 @@ class OrdenDeTrabajo(models.Model):
         EstadoOrdenTrabajo, 
         on_delete=models.SET_NULL, 
         null=True,
-        blank=True, # Permite un estado nulo, aunque deberías asignar un default
+        blank=True,
         db_column="id_estado_orden_trabajo"
     )
     
-    # (Opcional pero recomendado: campos para la ejecución real)
     hora_inicio_real = models.DateTimeField(null=True, blank=True)
     hora_fin_real = models.DateTimeField(null=True, blank=True)
     cantidad_producida = models.IntegerField(null=True, blank=True)
 
-    # --- Auditoría ---
     history = HistoricalRecords()
 
     class Meta:
         db_table = "orden_de_trabajo"
-        verbose_name = "Orden de Trabajo"
-        verbose_name_plural = "Órdenes de Trabajo"
-        ordering = ['hora_inicio_programada'] # Ordena por defecto
+        ordering = ['hora_inicio_programada']
 
     def __str__(self):
         return f"OT-{self.id_orden_trabajo} (OP: {self.id_orden_produccion.id_orden_produccion})"
-    
+
+    def recalcular_cantidad_producida(self):
+        """
+        Recalcula la cantidad producida según las no conformidades cargadas.
+        """
+        from django.db.models import Sum
+        
+        desperdicio_total = self.no_conformidades.aggregate(
+            total=Sum("cant_desperdiciada")
+        )["total"] or 0
+
+        self.cantidad_producida = max(self.cantidad_programada - desperdicio_total, 0)
+        self.save(update_fields=["cantidad_producida"])
+        
     
 class TipoNoConformidad(models.Model):
     id_tipo_no_conformidad = models.AutoField(primary_key=True)
@@ -152,26 +160,34 @@ class TipoNoConformidad(models.Model):
     
     
 class NoConformidad(models.Model):
-        id_no_conformidad = models.AutoField(primary_key=True)
-        
-        id_orden_trabajo = models.ForeignKey(
-            OrdenDeTrabajo,  # Vincular al "hijo"
-            on_delete=models.CASCADE, 
-            db_column="id_orden_trabajo"
-        )
+    id_no_conformidad = models.AutoField(primary_key=True)
 
-        id_tipo_no_conformidad = models.ForeignKey(
-        TipoNoConformidad,
-        on_delete=models.PROTECT, # Recomendado: No borrar el tipo si está siendo usado
-        db_column="id_tipo_no_conformidad",
-        related_name="no_conformidades",
-        verbose_name="Tipo de No Conformidad"
+    id_orden_trabajo = models.ForeignKey(
+        OrdenDeTrabajo,
+        on_delete=models.CASCADE,
+        db_column="id_orden_trabajo",
+        related_name="no_conformidades"
     )
-        
-        cant_desperdiciada = models.IntegerField()
 
-        class Meta:
-            db_table = "no_conformidades"
+    id_tipo_no_conformidad = models.ForeignKey(
+        TipoNoConformidad,
+        on_delete=models.PROTECT,
+        db_column="id_tipo_no_conformidad"
+    )
+
+    cant_desperdiciada = models.IntegerField()
+
+    class Meta:
+        db_table = "no_conformidades"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        self.id_orden_trabajo.recalcular_cantidad_producida()
+
+    def delete(self, *args, **kwargs):
+        ot = self.id_orden_trabajo
+        super().delete(*args, **kwargs)
+        ot.recalcular_cantidad_producida()
 
 
 class PausaOT(models.Model):

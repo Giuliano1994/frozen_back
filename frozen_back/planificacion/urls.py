@@ -3,5 +3,6 @@ from . import views
 
 urlpatterns = [
     # Registra la vista en la URL 'api/planificacion/ejecutar/'
-    path('ejecutar/', views.ejecutar_planificacion_view, name='ejecutar-planificacion'),
+    path('planificacion/', views.ejecutar_planificacion_view, name='ejecutar-planificacion'),
+    path('replanificar/', views.replanificar_produccion_view, name='replanificar_produccion'),
 ]
