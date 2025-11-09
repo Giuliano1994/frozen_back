@@ -28,6 +28,7 @@ class ProductoLinea(models.Model):
     id_producto = models.ForeignKey(Producto, on_delete=models.CASCADE, db_column="id_producto")
     id_linea_produccion = models.ForeignKey(LineaProduccion, on_delete=models.CASCADE, db_column="id_linea_produccion")
     cant_por_hora = models.IntegerField(blank=True, null=True)
+    cantidad_minima = models.IntegerField(blank=True, null=True)
 
     class Meta:
         db_table = "producto_linea"

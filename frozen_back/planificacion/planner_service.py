@@ -54,18 +54,21 @@ def ejecutar_planificador():
     lineas_ids = [l.id_linea_produccion for l in lineas]
 
     reglas = ProductoLinea.objects.filter(
-        id_producto_id__in=productos_ids,
-        id_linea_produccion_id__in=lineas_ids,
-        cant_por_hora__gt=0
+    id_producto_id__in=productos_ids,
+    id_linea_produccion_id__in=lineas_ids
     ).values(
         "id_producto_id",
         "id_linea_produccion_id",
-        "cant_por_hora"
+        "cant_por_hora",
+        "cantidad_minima"
     )
 
     # ✅ Diccionario para lookup rápido
     capacidad_lookup = {
-        (r["id_producto_id"], r["id_linea_produccion_id"]): r["cant_por_hora"]
+        (r["id_producto_id"], r["id_linea_produccion_id"]): {
+            "cant_por_hora": r["cant_por_hora"],
+            "cantidad_minima": r["cantidad_minima"] or 0
+        }
         for r in reglas
     }
 
@@ -108,22 +111,35 @@ def ejecutar_planificador():
 
         for linea in lineas_para_producto:
 
-            tamano_tanda = int(capacidad_lookup[(producto_id, linea.id_linea_produccion)])
-            duracion_tanda = 60  # 1 tanda = 1 hora
+            regla = capacidad_lookup[(producto_id, linea.id_linea_produccion)]
+            tamano_tanda = regla["cant_por_hora"]
+            minimo = regla["cantidad_minima"] or 0
+
+            duracion_tanda = 60  # cada tanda dura 1 hora
 
             max_tandas = math.ceil(total / tamano_tanda)
 
             for t in range(max_tandas):
 
-                # ✅ Manejo de tanda parcial final
-                tamano_real = tamano_tanda
+                # Última tanda → puede ser parcial
                 if t == max_tandas - 1:
                     sobra = total - (tamano_tanda * (max_tandas - 1))
-                    tamano_real = min(tamano_tanda, sobra)
 
-                # ✅ Duración proporcional
+                    # ❗ Si la tanda final es menor al mínimo, NO se produce
+                    if sobra < minimo:
+                        print(
+                            f"⚠️ Tanda final de OP {op.id_orden_produccion} en línea {linea.id_linea_produccion} "
+                            f"({sobra} unidades) menor al mínimo permitido ({minimo}). No se generará."
+                        )
+                        continue
+
+                    tamano_real = sobra
+                else:
+                    tamano_real = tamano_tanda
+
                 duracion_real = math.ceil(60 * (tamano_real / tamano_tanda))
 
+                # Crear variables del solver
                 lit = model.NewBoolVar(
                     f"op{op.id_orden_produccion}_l{linea.id_linea_produccion}_t{t}"
                 )
@@ -142,14 +158,14 @@ def ejecutar_planificador():
 
                 intervals_por_linea[linea.id_linea_produccion].append(interval)
                 all_end_vars.append(end)
-
-        # ✅ Cobertura exacta de la OP
+                
+        # ✅ Cobertura sin obligar a producir cantidades menores al mínimo
         model.Add(
             sum(
                 tanda["literal"] * tanda["tamano"]
                 for tanda in todas_tandas
                 if tanda["op"] == op
-            ) == total
+            ) <= total
         )
 
     # ✅ NoOverlap por línea
@@ -159,7 +175,18 @@ def ejecutar_planificador():
     # ✅ Minimizar makespan
     makespan = model.NewIntVar(0, HORIZONTE_MINUTOS, "makespan")
     model.AddMaxEquality(makespan, all_end_vars)
-    model.Minimize(makespan)
+
+    # Variable que representa la producción total planificada
+    produccion_total = model.NewIntVar(0, sum(op.cantidad for op in ordenes), "produccion_total")
+
+    model.Add(
+        produccion_total == sum(
+            tanda["literal"] * tanda["tamano"]
+            for tanda in todas_tandas
+        )
+    )
+
+    model.Maximize(produccion_total)
 
     # ✅ Ejecutar solver
     solver = cp_model.CpSolver()

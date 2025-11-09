@@ -470,6 +470,10 @@ def verificar_y_actualizar_op_segun_ots(orden_produccion_id):
                 lote.id_estado_lote_produccion = estado_lote_disponible
                 lote.save()
                 
+                orden.cantidad = total_producido_real
+                orden.save(update_fields=['cantidad'])
+                print(f"✅ Cantidad de la OP ajustada a producción real: {total_producido_real}")
+
                 print(f"Lote {lote.id_lote_produccion} actualizado. Cantidad final: {total_producido_real}")
 
                 # 5.3. Revisar Ventas (si aplica)
