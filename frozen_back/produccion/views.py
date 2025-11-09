@@ -87,7 +87,14 @@ class OrdenDeTrabajoViewSet(viewsets.ModelViewSet):
             return EstadoOrdenTrabajo.objects.get(descripcion__iexact=descripcion)
         except Exception as e:
             raise Exception(f"Estado de OT '{descripcion}' no encontrado.")
-            
+
+    # --- UTILITY: Obtener Estado de Línea ---
+    def _get_estado_linea(self, descripcion):
+        try:
+            return estado_linea_produccion.objects.get(descripcion__iexact=descripcion)
+        except Exception:
+            raise Exception(f"Estado de Línea '{descripcion}' no encontrado.")   
+        
 # --- Método perform_update (Mantenido) ---
     def perform_update(self, serializer):
         orden_trabajo = serializer.save()
@@ -106,12 +113,27 @@ class OrdenDeTrabajoViewSet(viewsets.ModelViewSet):
     def iniciar_ot(self, request, pk=None):
         """ Cambia el estado a 'En Progreso' y registra hora_inicio_real. """
         ot = get_object_or_404(OrdenDeTrabajo, pk=pk)
-        
+        linea = ot.id_linea_produccion
+
         if ot.id_estado_orden_trabajo.descripcion.lower() not in ['pendiente', 'planificada']:
             return Response(
                 {'error': 'La OT debe estar en estado Pendiente o Planificada para iniciar.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        
+        # 2. VALIDACIÓN Y CAMBIO DE ESTADO DE LÍNEA
+        estado_disponible = self._get_estado_linea('Disponible')
+        estado_ocupada = self._get_estado_linea('Ocupada')
+
+        if linea.id_estado_linea_produccion != estado_disponible:
+            return Response(
+                {'error': f'La línea de producción "{linea.descripcion}" no está disponible. Estado actual: {linea.id_estado_linea_produccion.descripcion}.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Cambiar estado de la línea a Ocupada
+        linea.id_estado_linea_produccion = estado_ocupada
+        linea.save()
 
         nuevo_estado = self._get_estado('En Progreso')
         
@@ -210,7 +232,8 @@ class OrdenDeTrabajoViewSet(viewsets.ModelViewSet):
         Requiere que se envíe 'produccion_bruta' en el body.
         """
         ot = get_object_or_404(OrdenDeTrabajo, pk=pk)
-        
+        linea = ot.id_linea_produccion
+
         # === ⚡ NUEVA LÓGICA: OBTENER Y VALIDAR PRODUCCIÓN BRUTA ===
         produccion_bruta_ingresada = request.data.get('produccion_bruta')
         
@@ -278,6 +301,10 @@ class OrdenDeTrabajoViewSet(viewsets.ModelViewSet):
         ot.cantidad_producida = max(0, cantidad_producida_real) # Redundante con la validación, pero seguro.
         
         # =================================================================
+        # 5. LIBERAR LÍNEA DE PRODUCCIÓN
+        estado_disponible = self._get_estado_linea('Disponible')
+        linea.id_estado_linea_produccion = estado_disponible
+        linea.save() # Guardar el cambio de estado de la línea
 
         # 5. Actualizar estado y guardar (Mantenido)
         nuevo_estado = self._get_estado('Completada')
