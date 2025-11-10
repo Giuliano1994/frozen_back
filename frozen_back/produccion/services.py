@@ -13,6 +13,7 @@ from materias_primas.models import MateriaPrima
 from collections import defaultdict
 import math
 from stock.models import EstadoLoteProduccion
+from productos.models import Producto
 
 @transaction.atomic
 def procesar_ordenes_en_espera(materia_prima_ingresada):
@@ -478,8 +479,10 @@ def verificar_y_actualizar_op_segun_ots(orden_produccion_id):
 
                 # 5.3. Revisar Ventas (si aplica)
                 if lote.id_producto:
-                    # Asumiendo que esta función existe
-                    # revisar_ordenes_de_venta_pendientes(lote.id_producto)
+                    from ventas.services import revisar_ordenes_de_venta_pendientes  # <-- IMPORT LOCAL AQUÍ
+
+                    producto = lote.id_producto
+                    revisar_ordenes_de_venta_pendientes(producto)
                     pass 
             
             # 5.4. Actualizar estado de la OP
