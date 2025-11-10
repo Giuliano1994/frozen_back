@@ -175,6 +175,14 @@ class OrdenDeTrabajoViewSet(viewsets.ModelViewSet):
         ot.id_estado_orden_trabajo = nuevo_estado
         ot.save()
 
+        """Cambiar estado de linea de producción a Detenida"""
+
+        linea_produccion = LineaProduccion.objects.get(pk=ot.id_linea_produccion)
+        estado_detenido = self._get_estado_linea('Detenida')
+
+        linea_produccion.id_estado_linea_produccion = estado_detenido
+        linea_produccion.save()
+
         return Response({'message': 'OT pausada correctamente'}, status=status.HTTP_200_OK)
 
     
@@ -213,6 +221,12 @@ class OrdenDeTrabajoViewSet(viewsets.ModelViewSet):
         nuevo_estado = self._get_estado('En Progreso')
         ot.id_estado_orden_trabajo = nuevo_estado
         ot.save()
+
+        """Cambiar estado de linea de producción a Ocupada"""
+        linea_produccion = LineaProduccion.objects.get(pk=ot.id_linea_produccion)
+        estado_ocupada = self._get_estado_linea('Ocupada')
+        linea_produccion.id_estado_linea_produccion = estado_ocupada
+        linea_produccion.save()
 
         return Response({
             'message': f'OT reanudada. Pausa registrada con duración de {duracion} minutos.',
