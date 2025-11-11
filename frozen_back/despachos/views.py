@@ -1,4 +1,4 @@
-from time import timezone
+from django.utils import timezone
 from django.shortcuts import render
 from rest_framework import viewsets, filters, status
 from rest_framework.response import Response
