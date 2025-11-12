@@ -1,13 +1,13 @@
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, render
 from rest_framework import viewsets, filters, serializers as drf_serializers, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import transaction
-from produccion.services import gestionar_reservas_para_orden_produccion, descontar_stock_reservado, calcular_porcentaje_desperdicio_historico
+from produccion.services import gestionar_reservas_para_orden_produccion, descontar_stock_reservado, calcular_porcentaje_desperdicio_historico, verificar_y_actualizar_op_segun_ots
 from recetas.models import Receta, RecetaMateriaPrima
 from productos.models import Producto
-from .models import EstadoOrdenProduccion, LineaProduccion, OrdenProduccion, NoConformidad, estado_linea_produccion
+from .models import EstadoOrdenProduccion, EstadoOrdenTrabajo, LineaProduccion, OrdenProduccion, NoConformidad, PausaOT, TipoNoConformidad, estado_linea_produccion, OrdenDeTrabajo
 from stock.models import EstadoLoteMateriaPrima, LoteMateriaPrima, LoteProduccion, EstadoLoteProduccion, LoteProduccionMateria, EstadoReservaMateria, ReservaMateriaPrima
 from .serializers import (
     EstadoOrdenProduccionSerializer,
@@ -15,9 +15,12 @@ from .serializers import (
     OrdenProduccionSerializer,
     OrdenProduccionUpdateEstadoSerializer,
     NoConformidadSerializer,
-    HistoricalOrdenProduccionSerializer
+    HistoricalOrdenProduccionSerializer,
+    OrdenDeTrabajoSerializer,
+    TipoNoConformidadSerializer,
+    NoConformidadCreateSerializer
 )
-from .filters import OrdenProduccionFilter
+from .filters import OrdenDeTrabajoFilter, OrdenProduccionFilter
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Sum
@@ -40,17 +43,340 @@ class EstadoLineaProduccionViewSet(viewsets.ModelViewSet):
     queryset = estado_linea_produccion.objects.all()
     serializer_class = EstadoOrdenProduccionSerializer
 
-
+class TipoNoConformidadViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para gestionar los Tipos de No Conformidad.
+    """
+    queryset = TipoNoConformidad.objects.all()
+    serializer_class = TipoNoConformidadSerializer
 # ------------------------------
 # ViewSet de OrdenProduccion
 # ------------------------------
+
+
+class OrdenDeTrabajoViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para gestionar las Órdenes de Trabajo (los fragmentos) con control de tiempo teórico.
+    """
+    queryset = OrdenDeTrabajo.objects.all().select_related(
+        'id_orden_produccion', 
+        'id_linea_produccion', 
+        'id_estado_orden_trabajo'
+    )
+    serializer_class = OrdenDeTrabajoSerializer
+    
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    search_fields = [
+        'id_linea_produccion__descripcion', 
+        'id_estado_orden_trabajo__descripcion', 
+        'id_orden_produccion__id_orden_produccion' 
+    ]
+    ordering_fields = [
+        'hora_inicio_programada', 
+        'cantidad_programada', 
+        'id_estado_orden_trabajo__descripcion'
+    ]
+    ordering = ['hora_inicio_programada'] # Orden por defecto
+
+    filterset_class = OrdenDeTrabajoFilter
+    
+    # --- UTILITY: Obtener Estado ---
+    def _get_estado(self, descripcion):
+        try:
+            # Implementación REAL: Reemplaza con tu método real para obtener el estado
+            return EstadoOrdenTrabajo.objects.get(descripcion__iexact=descripcion)
+        except Exception as e:
+            raise Exception(f"Estado de OT '{descripcion}' no encontrado.")
+
+    # --- UTILITY: Obtener Estado de Línea ---
+    def _get_estado_linea(self, descripcion):
+        try:
+            return estado_linea_produccion.objects.get(descripcion__iexact=descripcion)
+        except Exception:
+            raise Exception(f"Estado de Línea '{descripcion}' no encontrado.")   
+        
+# --- Método perform_update (Mantenido) ---
+    def perform_update(self, serializer):
+        orden_trabajo = serializer.save()
+        
+        # 2. Llama a nuestro servicio de verificación
+        if orden_trabajo.id_orden_produccion:
+            verificar_y_actualizar_op_segun_ots(
+                orden_trabajo.id_orden_produccion.id_orden_produccion
+            )
+            
+    # =================================================================
+    # 1. ACCIÓN INICIAR OT (Registra hora_inicio_real)
+    # =================================================================
+    @action(detail=True, methods=['patch'])
+    @transaction.atomic
+    def iniciar_ot(self, request, pk=None):
+        """ Cambia el estado a 'En Progreso' y registra hora_inicio_real. """
+        ot = get_object_or_404(OrdenDeTrabajo, pk=pk)
+        linea = ot.id_linea_produccion
+
+        if ot.id_estado_orden_trabajo.descripcion.lower() not in ['pendiente', 'planificada']:
+            return Response(
+                {'error': 'La OT debe estar en estado Pendiente o Planificada para iniciar.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # 2. VALIDACIÓN Y CAMBIO DE ESTADO DE LÍNEA
+        estado_disponible = self._get_estado_linea('Disponible')
+        estado_ocupada = self._get_estado_linea('Ocupada')
+
+        if linea.id_estado_linea_produccion != estado_disponible:
+            return Response(
+                {'error': f'La línea de producción "{linea.descripcion}" no está disponible. Estado actual: {linea.id_estado_linea_produccion.descripcion}.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Cambiar estado de la línea a Ocupada
+        linea.id_estado_linea_produccion = estado_ocupada
+        linea.save()
+
+        nuevo_estado = self._get_estado('En Progreso')
+        
+        ot.hora_inicio_real = timezone.now()
+        ot.id_estado_orden_trabajo = nuevo_estado
+        ot.save()
+        
+        return Response({'message': 'OT iniciada correctamente', 'estado': nuevo_estado.descripcion}, 
+                        status=status.HTTP_200_OK)
+
+
+    # =================================================================
+    # 2. ACCIÓN PAUSAR OT (Registra pausa teórica)
+    # =================================================================
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def pausar_ot(self, request, pk=None):
+        """ Crea una PausaOT activa y cambia el estado a 'En Pausa'. """
+        ot = get_object_or_404(OrdenDeTrabajo, pk=pk)
+        motivo = request.data.get('motivo')
+        
+        if ot.id_estado_orden_trabajo.descripcion.lower() != 'en progreso':
+            return Response({'error': 'La OT debe estar en estado "En Progreso" para pausar.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not motivo:
+            return Response({'error': 'El motivo de la pausa es obligatorio.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if ot.pausas.filter(activa=True).exists():
+             return Response({'error': 'Ya existe una pausa activa. Debe reanudar primero.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        PausaOT.objects.create(
+            id_orden_trabajo=ot,
+            motivo=motivo,
+            activa=True,
+            duracion_minutos=0 
+        )
+        
+        nuevo_estado = self._get_estado('En Pausa')
+        ot.id_estado_orden_trabajo = nuevo_estado
+        ot.save()
+
+        """Cambiar estado de linea de producción a Detenida"""
+
+        linea_produccion = LineaProduccion.objects.get(pk=ot.id_linea_produccion.id_linea_produccion)
+        estado_detenido = self._get_estado_linea('Detenida')
+
+        linea_produccion.id_estado_linea_produccion = estado_detenido
+        linea_produccion.save()
+
+        return Response({'message': 'OT pausada correctamente'}, status=status.HTTP_200_OK)
+
+    
+    # =================================================================
+    # 3. ACCIÓN REANUDAR OT (Define Duración Teórica y Finaliza Pausa)
+    # =================================================================
+    @action(detail=True, methods=['patch'])
+    @transaction.atomic
+    def reanudar_ot(self, request, pk=None):
+        """ 
+        Finaliza la PausaOT activa, asignando la duración teórica provista por el usuario.
+        """
+        ot = get_object_or_404(OrdenDeTrabajo, pk=pk)
+        
+        duracion_pausa_teorica = request.data.get('duracion_minutos', 0)
+        
+        if ot.id_estado_orden_trabajo.descripcion.lower() != 'en pausa':
+            return Response({'error': 'La OT debe estar en estado "En Pausa" para reanudar.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            duracion = int(duracion_pausa_teorica)
+            if duracion < 0: raise ValueError
+        except ValueError:
+             return Response({'error': 'La duración de la pausa debe ser un número entero positivo.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            ultima_pausa = ot.pausas.get(activa=True)
+            
+            ultima_pausa.duracion_minutos = duracion 
+            ultima_pausa.activa = False
+            ultima_pausa.save()
+            
+        except PausaOT.DoesNotExist:
+            return Response({'error': 'No hay pausas activas para reanudar.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        nuevo_estado = self._get_estado('En Progreso')
+        ot.id_estado_orden_trabajo = nuevo_estado
+        ot.save()
+
+        """Cambiar estado de linea de producción a Ocupada"""
+        linea_produccion = LineaProduccion.objects.get(pk=ot.id_linea_produccion.id_linea_produccion)
+        estado_ocupada = self._get_estado_linea('Ocupada')
+        linea_produccion.id_estado_linea_produccion = estado_ocupada
+        linea_produccion.save()
+
+        return Response({
+            'message': f'OT reanudada. Pausa registrada con duración de {duracion} minutos.',
+            'estado': nuevo_estado.descripcion
+        }, status=status.HTTP_200_OK)
+
+
+    # =================================================================
+    # 4. ACCIÓN FINALIZAR OT (Calcula duración planificada en el momento)
+    # =================================================================
+    @action(detail=True, methods=['patch'])
+    @transaction.atomic
+    def finalizar_ot(self, request, pk=None):
+        """ 
+        Cambia el estado a 'Completada', calcula hora_fin_real (tiempo teórico + pausas)
+        y establece la cantidad_producida (Producción Bruta - Desperdicio).
+        Requiere que se envíe 'produccion_bruta' en el body.
+        """
+        ot = get_object_or_404(OrdenDeTrabajo, pk=pk)
+        linea = ot.id_linea_produccion
+
+        # === ⚡ NUEVA LÓGICA: OBTENER Y VALIDAR PRODUCCIÓN BRUTA ===
+        produccion_bruta_ingresada = request.data.get('produccion_bruta')
+        
+        # 0. Validación de Datos (Producción Bruta)
+        try:
+            if produccion_bruta_ingresada is None:
+                raise ValueError('El campo produccion_bruta es obligatorio para finalizar la OT.')
+            
+            produccion_bruta_ingresada = int(produccion_bruta_ingresada)
+            if produccion_bruta_ingresada < 0: 
+                raise ValueError('La producción bruta no puede ser negativa.')
+                
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validaciones (Mantenidas)
+        if ot.id_estado_orden_trabajo.descripcion.lower() != 'en progreso':
+            return Response({'error': 'La OT debe estar en estado "En Progreso" para finalizar.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not ot.hora_inicio_real:
+            return Response({'error': 'La OT no tiene hora de inicio real registrada.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 1. Validar Pausas Activas (Mantenido)
+        if ot.pausas.filter(activa=True).exists():
+            return Response({'error': 'No se puede finalizar. Hay una pausa activa que debe ser reanudada.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 2. CALCULAR LA DURACIÓN PLANIFICADA EN MINUTOS (Mantenido)
+        if not ot.hora_fin_programada or not ot.hora_inicio_programada:
+            return Response({'error': 'La OT no tiene un horario planificado completo (inicio/fin).'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        duracion_planificada_delta = ot.hora_fin_programada - ot.hora_inicio_programada
+        duracion_planificada_minutos = duracion_planificada_delta.total_seconds() / 60
+        
+        # 3. Sumar el tiempo total de pausas (Mantenido)
+        tiempo_pausa_total_minutos = ot.pausas.filter(activa=False).aggregate(
+            total_pausa=Sum('duracion_minutos')
+        )['total_pausa'] or 0
+        
+        # 4. Calcular hora_fin_real (Mantenido)
+        tiempo_operacion_total = duracion_planificada_minutos + tiempo_pausa_total_minutos
+        ot.hora_fin_real = ot.hora_inicio_real + timedelta(minutes=tiempo_operacion_total)
+
+
+        # =================================================================
+        # ⚡ NUEVA LÓGICA: CALCULAR CANTIDAD PRODUCIDA REAL Y VALIDAR BRUTA
+        # =================================================================
+
+        # 4.1. Sumar el desperdicio total registrado en las No Conformidades de esta OT
+        total_desperdicio_query = ot.no_conformidades.aggregate(
+            total_desperdicio=Sum('cant_desperdiciada')
+        )
+        total_desperdicio = total_desperdicio_query.get('total_desperdicio') or 0
+
+        # 4.2. Validación de regla de negocio: Producción Bruta no puede ser menor a Desperdicios
+        if produccion_bruta_ingresada < total_desperdicio:
+            return Response(
+                {'error': f'La producción bruta ingresada ({produccion_bruta_ingresada}) no puede ser menor al desperdicio total registrado ({total_desperdicio}).'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        # 4.3. Calcular Cantidad Producida Neta = Producción Bruta - Total Desperdicio
+        cantidad_producida_real = produccion_bruta_ingresada #- total_desperdicio
+        
+        # 4.4. Asignar valores al modelo
+        ot.produccion_bruta = produccion_bruta_ingresada
+        ot.cantidad_producida = max(0, cantidad_producida_real) # Redundante con la validación, pero seguro.
+        
+        # =================================================================
+        # 5. LIBERAR LÍNEA DE PRODUCCIÓN
+        estado_disponible = self._get_estado_linea('Disponible')
+        linea.id_estado_linea_produccion = estado_disponible
+        linea.save() # Guardar el cambio de estado de la línea
+
+        # 5. Actualizar estado y guardar (Mantenido)
+        nuevo_estado = self._get_estado('Completada')
+        ot.id_estado_orden_trabajo = nuevo_estado
+        ot.save() # Se guardan todos los cambios
+
+        # 6. Llama al servicio de verificación de OP padre (Mantenido)
+        if ot.id_orden_produccion:
+            verificar_y_actualizar_op_segun_ots(ot.id_orden_produccion.id_orden_produccion)
+
+        return Response({
+            'message': 'OT finalizada correctamente',
+            'produccion_bruta_registrada': ot.produccion_bruta,
+            'cantidad_producida_neta': ot.cantidad_producida,
+            'total_desperdicio_registrado': total_desperdicio
+        }, status=status.HTTP_200_OK)
+
+    # =================================================================
+    # 5. ACCIÓN REGISTRAR NO CONFORMIDAD (NUEVO)
+    # =================================================================
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def registrar_no_conformidad(self, request, pk=None):
+        """ 
+        Registra una No Conformidad con su tipo asociado y cantidad desperdiciada.
+        Solo permitido si el estado es 'En Progreso'.
+        """
+        ot = get_object_or_404(OrdenDeTrabajo, pk=pk)
+        
+        # 1. Validación de Estado
+        if ot.id_estado_orden_trabajo.descripcion.lower() != 'en progreso':
+            return Response(
+                {'error': 'La No Conformidad solo puede registrarse cuando la OT está en estado "En Progreso".'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # 2. Serialización y Validación de Datos (Usando el serializer de creación)
+        # Importante: Asume que tienes el NoConformidadCreateSerializer definido e importado
+        serializer = NoConformidadCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 3. Guardar la No Conformidad
+        # Asignamos la OT actual antes de guardar
+        serializer.save(id_orden_trabajo=ot)
+        
+        # 4. Respuesta
+        return Response({
+            'message': 'No Conformidad registrada correctamente para esta Orden de Trabajo.',
+            'data': serializer.data
+        }, status=status.HTTP_201_CREATED)
 
 
 #V2
 class OrdenProduccionViewSet(viewsets.ModelViewSet):
     queryset = OrdenProduccion.objects.all().select_related(
         "id_estado_orden_produccion",
-        "id_linea_produccion",
+    #    "id_linea_produccion",
         "id_supervisor",
         "id_operario",
         "id_lote_produccion",
@@ -137,59 +463,22 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
         nuevo_estado = serializer.validated_data['id_estado_orden_produccion']
         estado_descripcion = nuevo_estado.descripcion.lower()
 
-        # Actualizar el estado de la orden
+        # --- 1. VALIDACIÓN DE LÓGICA DE NEGOCIO ---
+        if estado_descripcion == 'finalizada':
+            if orden.id_estado_orden_produccion.descripcion.lower() != 'finalizada':
+                return Response(
+                    {'error': 'No se puede forzar el estado "Finalizada" manualmente. '
+                              'Este estado se aplica automáticamente cuando todas '
+                              'las Órdenes de Trabajo asociadas se completan.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Actualizar el estado de la orden (SOLO si no es 'finalizada' o ya lo era)
         orden.id_estado_orden_produccion = nuevo_estado
         orden.save()
 
-        # --- 🔹 CASO 1: ORDEN FINALIZADA ---
         if estado_descripcion == 'finalizada':
-            try:
-                # Descontar definitivamente el stock reservado (basado en la orden original, ej. 100 pizzas)
-                descontar_stock_reservado(orden)
-            except Exception as e:
-                return Response(
-                    {'error': f'Error al descontar stock reservado: {str(e)}'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-            # Marcar el lote de producción como "Disponible" Y AJUSTAR CANTIDAD
-            if orden.id_lote_produccion:
-                try:
-                    estado_disponible = EstadoLoteProduccion.objects.get(descripcion__iexact="Disponible")
-                    lote = orden.id_lote_produccion
-
-                    # --- NUEVO: LÓGICA DE AJUSTE POR DESPERDICIO ---
-                    
-                    # 1. Calcular el total de desperdicio registrado para esta orden
-                    total_desperdicio = NoConformidad.objects.filter(
-                        id_orden_produccion=orden
-                    ).aggregate(
-                        total=Sum('cant_desperdiciada')
-                    )['total'] or 0
-                    
-                    # 2. Obtener la cantidad planificada (ya sea de la orden o del lote)
-                    #    Asumimos que lote.cantidad tiene el valor original (ej. 100)
-                    cantidad_planificada = lote.cantidad 
-                    
-                    # 3. Calcular la cantidad final real y asegurarse de que no sea negativa
-                    cantidad_final = max(0, cantidad_planificada - total_desperdicio)
-                    
-                    # 4. Actualizar el lote con la cantidad final (ej. 100 - 5 = 95)
-                    lote.cantidad = cantidad_final
-                    lote.id_estado_lote_produccion = estado_disponible
-                    lote.save()
-                    
-                    # --- FIN NUEVO ---
-
-                    # Revisar órdenes de venta pendientes
-                    if lote.id_producto:
-                        revisar_ordenes_de_venta_pendientes(lote.id_producto)
-
-                except EstadoLoteProduccion.DoesNotExist:
-                    return Response(
-                        {'error': 'Estado de lote "Disponible" no encontrado'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
+            pass # No hacer nada aquí, solo permitir la llamada si ya estaba finalizada
 
         # --- 🔹 CASO 2: ORDEN CANCELADA ---
         elif estado_descripcion == 'cancelada':
@@ -233,6 +522,26 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
                     {'error': f'Error al liberar reservas: {str(e)}'},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
+            try:
+                # Obtener los estados relevantes
+                estado_ot_cancelada = EstadoOrdenTrabajo.objects.get(descripcion__iexact='Cancelada')
+                estados_finales_ot = EstadoOrdenTrabajo.objects.filter(
+                    Q(descripcion__iexact='Completada') | Q(descripcion__iexact='Cancelada')
+                )
+                
+                # Buscar OTs hijas que NO estén ya en un estado final
+                ots_a_cancelar = orden.ordenes_de_trabajo.exclude(
+                    id_estado_orden_trabajo__in=estados_finales_ot
+                )
+                
+                # Cancelarlas en lote
+                count = ots_a_cancelar.count()
+                if count > 0:
+                    ots_a_cancelar.update(id_estado_orden_trabajo=estado_ot_cancelada)
+                    print(f"Canceladas {count} Órdenes de Trabajo hijas de la OP {orden.id_orden_produccion}.")
+            
+            except EstadoOrdenTrabajo.DoesNotExist:
+                print(f"Advertencia: No se pudo encontrar el estado 'Cancelada' para OrdenDeTrabajo.")
 
         # --- 🔹 CASO 3: ORDEN PENDIENTE DE INICIO ---
         elif estado_descripcion == 'pendiente de inicio':
@@ -266,12 +575,41 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
 
 
+    @action(detail=False, methods=['delete'], url_path='bulk-delete')
+    def bulk_delete(self, request):
+        """
+        Borra órdenes de producción dentro de un rango de IDs pasados como query params: ?inicio=100&fin=50
+        """
+        inicio = request.query_params.get('inicio')
+        fin = request.query_params.get('fin')
 
+        if not inicio or not fin:
+            return Response({"detail": "Se requieren parámetros 'inicio' y 'fin'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            inicio = int(inicio)
+            fin = int(fin)
+        except ValueError:
+            return Response({"detail": "Los parámetros deben ser enteros"}, status=status.HTTP_400_BAD_REQUEST)
+
+        id_min = min(inicio, fin)
+        id_max = max(inicio, fin)
+
+        ordenes = OrdenProduccion.objects.filter(id_orden_produccion__gte=id_min,
+                                                 id_orden_produccion__lte=id_max)
+        count = ordenes.count()
+        ordenes.delete()  # Esto borrará automáticamente los NoConformidad por on_delete=CASCADE
+        return Response({"detail": f"{count} órdenes de producción borradas"}, status=status.HTTP_204_NO_CONTENT)
+    
+    
 # ------------------------------
 # ViewSet de NoConformidad
 # ------------------------------
 class NoConformidadViewSet(viewsets.ModelViewSet):
-    queryset = NoConformidad.objects.all().select_related("id_orden_produccion")
+    queryset = NoConformidad.objects.all().select_related(
+        "id_orden_trabajo", 
+        "id_tipo_no_conformidad"
+    )
     serializer_class = NoConformidadSerializer
 
 
@@ -290,44 +628,50 @@ class HistorialOrdenProduccionViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 @api_view(['GET'])
-def porcentaje_desperdicio_historico(request): # <-- Cambiar nombre de la función/vista
+def porcentaje_desperdicio_historico(request):
     """
-    Devuelve el porcentaje de desperdicio histórico promedio para un producto,
-    basado en las últimas 10 órdenes de producción finalizadas.
+    Devuelve el porcentaje histórico de desperdicio para un producto.
 
-    Parámetro esperado en la URL (query param):
-    - id_producto: El ID del producto.
+    Parámetros GET:
+    - id_producto: obligatorio
+    - from_date: opcional (YYYY-MM-DD)
+    - limit: opcional (cantidad de OPs a considerar, por defecto 10)
     """
     id_producto_str = request.query_params.get('id_producto')
+    from_date_str = request.query_params.get('from_date')
+    limit_str = request.query_params.get('limit')
 
-    # Validar parámetro
+    # ----- 1. Validar id_producto -----
     if not id_producto_str:
-        return Response(
-            {"error": "Falta el parámetro 'id_producto'"},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({"error": "Falta 'id_producto'."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         id_producto = int(id_producto_str)
-    except (ValueError, TypeError):
-        return Response(
-            {"error": "El parámetro 'id_producto' debe ser un número entero."},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+    except:
+        return Response({"error": "'id_producto' debe ser entero."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Validar que el producto exista
     if not Producto.objects.filter(pk=id_producto).exists():
-         return Response({"error": f"El producto con ID {id_producto} no existe."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"error": "Producto no encontrado."}, status=404)
 
-    # Llamar al servicio actualizado
+    # ----- 2. Validar from_date (opcional) -----
+    from_date = None
+    if from_date_str:
+        try:
+            from_date = timezone.datetime.strptime(from_date_str, "%Y-%m-%d").date()
+        except:
+            return Response({"error": "Formato inválido para 'from_date'. Use YYYY-MM-DD."},
+                            status=400)
+
+    # ----- 3. Validar limit -----
     try:
-        porcentaje = calcular_porcentaje_desperdicio_historico(id_producto)
-        # Devolver solo el porcentaje en el JSON de respuesta
-        return Response({"porcentaje_desperdicio": porcentaje}, status=status.HTTP_200_OK)
+        limit = int(limit_str) if limit_str else 10
+    except:
+        return Response({"error": "'limit' debe ser entero."}, status=400)
 
+    # ----- 4. Ejecutar servicio -----
+    try:
+        porcentaje = calcular_porcentaje_desperdicio_historico(id_producto, from_date, limit)
+        return Response({"porcentaje_desperdicio": porcentaje}, status=200)
     except Exception as e:
-        print(f"Error al calcular porcentaje de desperdicio: {e}")
-        return Response(
-            {"error": "Ocurrió un error al calcular el porcentaje de desperdicio."},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        print(f"Error: {e}")
+        return Response({"error": "Error al calcular desperdicio."}, status=500)

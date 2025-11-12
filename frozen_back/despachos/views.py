@@ -1,3 +1,4 @@
+from django.utils import timezone
 from django.shortcuts import render
 from rest_framework import viewsets, filters, status
 from rest_framework.response import Response
@@ -59,6 +60,7 @@ class OrdenDespachoViewSet(viewsets.ViewSet):
         return Response(serializer.data)
 
     def create(self, request):
+        print(request.data)
         serializer = CrearOrdenDespachoSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         despacho = serializer.save()
@@ -103,6 +105,7 @@ class OrdenDespachoViewSet(viewsets.ViewSet):
                 if orden_venta.id_orden_venta in ordenes_entregadas:
                     # ✅ Entregada
                     orden_venta.id_estado_venta = estado_despachado
+                    orden_venta.fecha_entrega = timezone.now()
                     relacion.id_estado_despacho = estado_despacho_despachado
                 else:
                     # ❌ No entregada
@@ -122,6 +125,8 @@ class OrdenDespachoViewSet(viewsets.ViewSet):
             "ordenes_entregadas": ordenes_entregadas
         }, status=status.HTTP_200_OK)
     
+
+
 
 
 

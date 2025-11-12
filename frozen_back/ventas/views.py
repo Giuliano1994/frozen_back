@@ -1,11 +1,12 @@
 import json
 from django.shortcuts import render
 from rest_framework import viewsets, filters
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.decorators import action
 from django.conf import settings
 from empleados.models import Empleado
 from stock.models import LoteProduccion  # según tu estructura
@@ -15,7 +16,7 @@ from .services import gestionar_stock_y_estado_para_orden_venta, cancelar_orden_
 from .models import Factura, OrdenVenta, Reclamo, Sugerencia, NotaCredito
 from django.db import transaction
 from .filters import OrdenVentaFilter
-
+ 
 from .models import EstadoVenta, Cliente, OrdenVenta, OrdenVentaProducto, Prioridad
 from .serializers import (
     EstadoVentaSerializer,
@@ -61,80 +62,43 @@ class OrdenVentaViewSet(viewsets.ModelViewSet):
     ordering_fields = ['fecha', 'fecha_entrega']
     ordering = ['-fecha']
 
+    @action(detail=False, methods=['get'], url_path='no-pagadas-o-facturadas')
+    def get_no_pagadas_o_facturadas(self, request):
+        # Filtra todas las órdenes que NO tengan estado "Pagada" o "Facturada"
+        ordenes = OrdenVenta.objects.filter(
+            id_estado_venta=1
+        )
 
-"""
-def actualizar_estado_orden(orden):
-    from stock.models import LoteProduccion
-    productos_orden = OrdenVentaProducto.objects.filter(id_orden_venta=orden)
 
-    if not productos_orden.exists():
-        # Sin productos → estado Creada
-        estado = EstadoVenta.objects.filter(descripcion__iexact="Creada").first()
-    else:
-        hay_stock_para_todos = True
 
-        # Primero verificamos si hay stock suficiente para todos los productos
-        for op in productos_orden:
-            cantidad_disponible = (
-                LoteProduccion.objects
-                .filter(
-                    id_producto=op.id_producto,
-                    id_estado_lote_produccion__descripcion="Disponible"
-                )
-                .aggregate(total=models.Sum("cantidad"))
-                .get("total") or 0
-            )
-            if cantidad_disponible < op.cantidad:
-                hay_stock_para_todos = False
-                break
+        serializer = self.get_serializer(ordenes, many=True)
+        return Response(serializer.data)
 
-        if hay_stock_para_todos:
-            # Si hay stock suficiente, se descuenta por lotes (los más próximos a vencer primero)
-            for op in productos_orden:
-                cantidad_a_descontar = op.cantidad
-                lotes = (
-                    LoteProduccion.objects
-                    .filter(
-                        id_producto=op.id_producto,
-                        id_estado_lote_produccion__descripcion="Disponible",
-                        cantidad__gt=0
-                    )
-                    .order_by("fecha_vencimiento")  # primero los que vencen antes
-                )
 
-                for lote in lotes:
-                    if cantidad_a_descontar <= 0:
-                        break
+   
+    @action(detail=False, methods=['delete'], url_path='bulk-delete') 
+    def bulk_delete(self, request):
+        """
+        Borra órdenes dentro de un rango de IDs pasados como query params: ?inicio=530&fin=200
+        """
+        inicio = request.query_params.get('inicio')
+        fin = request.query_params.get('fin')
 
-                    if lote.cantidad >= cantidad_a_descontar:
-                        lote.cantidad -= cantidad_a_descontar
-                        cantidad_a_descontar = 0
-                    else:
-                        cantidad_a_descontar -= lote.cantidad
-                        lote.cantidad = 0
+        if not inicio or not fin:
+            return Response({"detail": "Se requieren parámetros 'inicio' y 'fin'"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            inicio = int(inicio)
+            fin = int(fin)
+        except ValueError:
+            return Response({"detail": "Los parámetros deben ser números enteros"}, status=status.HTTP_400_BAD_REQUEST)
 
-                    # Guardamos cambios
-                    lote.save(update_fields=["cantidad"])
+        # Filtrar órdenes dentro del rango
+        ordenes = OrdenVenta.objects.filter(id_orden_venta__lte=inicio, id_orden_venta__gte=fin)
+        count = ordenes.count()
+        ordenes.delete()  # borrará relaciones CASCADE automáticamente
+        return Response({"detail": f"{count} órdenes borradas"}, status=status.HTTP_204_NO_CONTENT)
 
-                    # Si el lote llega a cero, cambiar su estado a Cancelado (id_estado_lote_produccion = 9)
-                    if lote.cantidad == 0:
-                        lote.id_estado_lote_produccion_id = 9
-                        lote.save(update_fields=["id_estado_lote_produccion"])
-
-            # Cambia el estado a “Pendiente de Pago”
-            estado = EstadoVenta.objects.filter(descripcion__iexact="Pendiente de Pago").first()
-            if not estado:
-                estado = EstadoVenta.objects.create(descripcion="Pendiente de Pago")
-        else:
-            # Si no hay stock suficiente, pasa a “En Preparación”
-            estado = EstadoVenta.objects.filter(descripcion__iexact="En Preparación").first()
-            if not estado:
-                estado = EstadoVenta.objects.create(descripcion="En Preparación")
-
-    if estado:
-        orden.id_estado_venta = estado
-        orden.save(update_fields=['id_estado_venta'])
-"""
 
 
 class OrdenVentaProductoViewSet(viewsets.ModelViewSet):
@@ -174,23 +138,6 @@ class OrdenVentaProductoViewSet(viewsets.ModelViewSet):
 
 
 
-"""
-# METODO VIEJO
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        orden_producto = serializer.save()
-        actualizar_estado_orden(orden_producto.id_orden_venta)
-        return Response(self.get_serializer(orden_producto).data, status=status.HTTP_201_CREATED)
-
-    def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        orden = instance.id_orden_venta
-        self.perform_destroy(instance)
-        actualizar_estado_orden(orden)
-        return Response(status=status.HTTP_204_NO_CONTENT)
-"""
 
 @api_view(['GET'])
 def detalle_orden_venta(request, orden_id):
@@ -326,6 +273,7 @@ def cancelar_orden_view(request, orden_id):
 def listar_ordenes_venta(request):
     if request.method == "GET":
         try:
+
             ordenes = OrdenVenta.objects.all().order_by("-fecha")
 
             data = []
@@ -426,63 +374,6 @@ def crear_orden_venta(request):
     return JsonResponse({"error": "Método no permitido"}, status=405)
 
 
-"""
-# METODO VIEJO
-@csrf_exempt
-def crear_orden_venta(request):
-    if request.method == "POST":
-        try:
-            data = json.loads(request.body)
-
-            # Crear la orden de venta
-            ordenVenta = OrdenVenta.objects.create(
-                id_cliente_id=data.get("id_cliente"),
-                id_estado_venta_id=8,  # estado por defecto
-                id_prioridad_id=data.get("id_prioridad"),
-                fecha_entrega = data.get("fecha_entrega")
-            )
-
-            productos = data.get("productos", [])
-
-            for p in productos:
-                OrdenVentaProducto.objects.create(
-                    id_orden_venta=ordenVenta,
-                    id_producto_id=p["id_producto"],
-                    cantidad=p["cantidad"]
-                )
-
-            actualizar_estado_orden(ordenVenta)
-
-            # Armar respuesta con toda la información
-            orden_data = {
-                "id_orden_venta": ordenVenta.id_orden_venta,
-                "cliente": {
-                    "id": ordenVenta.id_cliente.id_cliente,
-                    "nombre": ordenVenta.id_cliente.nombre
-                },
-                "prioridad": ordenVenta.id_prioridad.descripcion,
-                "fecha_entrega": ordenVenta.fecha_entrega,
-                "estado": {
-                    "id": ordenVenta.id_estado_venta.id_estado_venta,
-                    "descripcion": ordenVenta.id_estado_venta.descripcion
-                },
-                "productos": [
-                    {
-                        "id": op.id_producto.id_producto,
-                        "nombre": op.id_producto.nombre,
-                        "cantidad": op.cantidad
-                    }
-                    for op in OrdenVentaProducto.objects.filter(id_orden_venta=ordenVenta)
-                ]
-            }
-
-            return JsonResponse(orden_data, status=201, safe=False)
-
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=400)
-
-    return JsonResponse({"error": "Método no permitido"}, status=405) 
-"""
     
 
 @csrf_exempt
@@ -605,37 +496,6 @@ def cambiar_estado_orden_venta(request):
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-"""
-
-@api_view(['PUT'])
-def cambiar_estado_orden_venta(request):
-    
-    #Endpoint para cambiar el estado de una orden de venta.
-    #Espera un JSON con:
-    #{
-    #    "id_orden_venta": <int>,
-    #    "id_estado_venta": <int>
-    #}
-    
-    try:
-        id_orden_venta = request.data.get("id_orden_venta")
-
-        if not id_orden_venta:
-            return Response({"error": "El campo 'id_orden_venta' es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
-
-        orden = OrdenVenta.objects.get(pk=id_orden_venta)
-        cancelar_orden_venta(orden)
-        serializer = OrdenVentaSerializer(orden)
-
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    except OrdenVenta.DoesNotExist:
-        return Response({"error": "Orden de venta no encontrada."}, status=status.HTTP_404_NOT_FOUND)
-    except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-"""
-
 
 class NotaCreditoViewSet(viewsets.ModelViewSet):
     """
@@ -695,3 +555,19 @@ class HistorialNotaCreditoViewSet(viewsets.ReadOnlyModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['history_type', 'history_user', 'id_factura']
     search_fields = ['history_user__usuario', 'motivo']
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    

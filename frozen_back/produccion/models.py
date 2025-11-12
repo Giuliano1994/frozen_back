@@ -24,7 +24,8 @@ class LineaProduccion(models.Model):
     id_linea_produccion = models.AutoField(primary_key=True)
     descripcion = models.CharField(max_length=100)
     id_estado_linea_produccion = models.ForeignKey(estado_linea_produccion, on_delete=models.CASCADE, db_column="id_estado_linea_produccion")
-
+    capacidad_por_hora = models.FloatField(default=0.0)
+    
     class Meta:
         db_table = "linea_produccion"
 
@@ -38,9 +39,11 @@ class OrdenProduccion(models.Model):
     id_estado_orden_produccion = models.ForeignKey(
         EstadoOrdenProduccion, on_delete=models.CASCADE, db_column="id_estado_orden_produccion"
     )
+    """  Comentamos ya que la Orden de Trabajo tendra la relacion con la linea de produccion
     id_linea_produccion = models.ForeignKey(
         LineaProduccion, on_delete=models.SET_NULL, blank=True, null=True, db_column="id_linea_produccion"
     )
+    """
     id_supervisor = models.ForeignKey(
         Empleado, on_delete=models.SET_NULL, blank=True, null=True,
         related_name="ordenes_supervisadas", db_column="id_supervisor"
@@ -67,11 +70,142 @@ class OrdenProduccion(models.Model):
         db_table = "orden_produccion"
 
 
+
+class EstadoOrdenTrabajo(models.Model):
+    id_estado_orden_trabajo = models.AutoField(primary_key=True)
+    descripcion = models.CharField(max_length=50)
+    # Podrías añadir un campo 'es_final' (Boolean) 
+    # para marcar estados como "Completada" o "Cancelada"
+
+    class Meta:
+        db_table = "estado_orden_trabajo"
+        verbose_name = "Estado de Orden de Trabajo"
+        verbose_name_plural = "Estados de Órdenes de Trabajo"
+
+    def __str__(self):
+        return self.descripcion
+    
+
+
+class OrdenDeTrabajo(models.Model):
+    id_orden_trabajo = models.AutoField(primary_key=True)
+    
+    # --- Vínculos Clave ---
+    id_orden_produccion = models.ForeignKey(
+        OrdenProduccion, 
+        on_delete=models.CASCADE, 
+        db_column="id_orden_produccion",
+        related_name="ordenes_de_trabajo"
+    )
+    id_linea_produccion = models.ForeignKey(
+        LineaProduccion, 
+        on_delete=models.PROTECT,
+        db_column="id_linea_produccion",
+        related_name="ordenes_de_trabajo"
+    )
+    
+    # --- Datos de Planificación ---
+    cantidad_programada = models.IntegerField()
+    hora_inicio_programada = models.DateTimeField()
+    hora_fin_programada = models.DateTimeField()
+
+    # --- Seguimiento y Control ---
+    id_estado_orden_trabajo = models.ForeignKey(
+        EstadoOrdenTrabajo, 
+        on_delete=models.SET_NULL, 
+        null=True,
+        blank=True,
+        db_column="id_estado_orden_trabajo"
+    )
+    
+    hora_inicio_real = models.DateTimeField(null=True, blank=True)
+    hora_fin_real = models.DateTimeField(null=True, blank=True)
+    cantidad_producida = models.IntegerField(null=True, blank=True)
+    produccion_bruta = models.IntegerField(null=True, blank=True)
+
+    history = HistoricalRecords()
+
+    class Meta:
+        db_table = "orden_de_trabajo"
+        ordering = ['hora_inicio_programada']
+
+    def __str__(self):
+        return f"OT-{self.id_orden_trabajo} (OP: {self.id_orden_produccion.id_orden_produccion})"
+
+    def recalcular_cantidad_producida(self):
+        """
+        Recalcula la cantidad producida según las no conformidades cargadas.
+        """
+        from django.db.models import Sum
+        
+        desperdicio_total = self.no_conformidades.aggregate(
+            total=Sum("cant_desperdiciada")
+        )["total"] or 0
+
+        self.cantidad_producida = max(self.cantidad_programada - desperdicio_total, 0)
+        self.save(update_fields=["cantidad_producida"])
+        
+    
+class TipoNoConformidad(models.Model):
+    id_tipo_no_conformidad = models.AutoField(primary_key=True)
+    nombre = models.CharField(max_length=100, unique=True)
+    descripcion = models.TextField(blank=True, null=True)
+
+    class Meta:
+        db_table = "tipo_no_conformidad"
+        verbose_name = "Tipo de No Conformidad"
+        verbose_name_plural = "Tipos de No Conformidades"
+    
+    def __str__(self):
+        return self.nombre
+    
+    
 class NoConformidad(models.Model):
     id_no_conformidad = models.AutoField(primary_key=True)
-    id_orden_produccion = models.ForeignKey(OrdenProduccion, on_delete=models.CASCADE, db_column="id_orden_produccion")
-    descripcion = models.CharField(max_length=100)
+
+    id_orden_trabajo = models.ForeignKey(
+        OrdenDeTrabajo,
+        on_delete=models.CASCADE,
+        db_column="id_orden_trabajo",
+        related_name="no_conformidades"
+    )
+
+    id_tipo_no_conformidad = models.ForeignKey(
+        TipoNoConformidad,
+        on_delete=models.PROTECT,
+        db_column="id_tipo_no_conformidad"
+    )
+
     cant_desperdiciada = models.IntegerField()
 
     class Meta:
         db_table = "no_conformidades"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        self.id_orden_trabajo.recalcular_cantidad_producida()
+
+    def delete(self, *args, **kwargs):
+        ot = self.id_orden_trabajo
+        super().delete(*args, **kwargs)
+        ot.recalcular_cantidad_producida()
+
+
+class PausaOT(models.Model):
+    id_pausa = models.AutoField(primary_key=True)
+    id_orden_trabajo = models.ForeignKey(
+        OrdenDeTrabajo, 
+        on_delete=models.CASCADE, 
+        related_name="pausas"
+    )
+    motivo = models.CharField(max_length=255)
+    
+    # Campo para registrar la duración teórica de la pausa
+    duracion_minutos = models.IntegerField(default=0) 
+    
+    # Campo para saber si está activa (pendiente de finalización)
+    # Usamos un booleano en lugar de la hora_fin.
+    activa = models.BooleanField(default=True) 
+
+    class Meta:
+        db_table = "pausa_orden_trabajo"

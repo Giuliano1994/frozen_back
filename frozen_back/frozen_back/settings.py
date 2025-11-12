@@ -57,6 +57,8 @@ INSTALLED_APPS = [
     'despachos',
     'drf_spectacular',
     'simple_history',
+    'planificacion',
+    'reportes',
 ]
 
 MIDDLEWARE = [
@@ -192,6 +194,6 @@ TELEGRAM_CHAT_ID = -1003144629342
 
 
 
-SECURE_SSL_REDIRECT = True
+SECURE_SSL_REDIRECT = False
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

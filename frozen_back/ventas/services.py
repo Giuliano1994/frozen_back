@@ -135,9 +135,9 @@ def gestionar_stock_y_estado_para_orden_venta(orden_venta: OrdenVenta):
                         print(f"No se encontró 'cant_por_hora' para el producto {linea.id_producto.nombre}. No se creará orden de producción.")
                     else:
                         # Calcular múltiplo de cant_por_hora necesario para cubrir lo faltante
-                        faltante = cantidad_faltante_a_reservar
-                        multiplo = (faltante + cant_por_hora - 1) // cant_por_hora
-                        cantidad_a_producir = multiplo * cant_por_hora
+                        #faltante = cantidad_faltante_a_reservar
+                        #multiplo = (faltante + cant_por_hora - 1) // cant_por_hora
+                        #cantidad_a_producir = multiplo * cant_por_hora
 
                         # Obtener o crear estado "En espera" de forma segura
                         estado_en_espera = EstadoOrdenProduccion.objects.filter(descripcion__iexact="En espera").first()
@@ -147,15 +147,18 @@ def gestionar_stock_y_estado_para_orden_venta(orden_venta: OrdenVenta):
                         # Asignar un supervisor por defecto si existe alguno (evita que el front falle por ausencia de campo)
                         default_supervisor = Empleado.objects.first()
 
+                        mañana = timezone.localdate() + timedelta(days=1)
+
                         orden_prod = OrdenProduccion.objects.create(
-                            cantidad=cantidad_a_producir,
+                            cantidad=cantidad_faltante_a_reservar,
                             id_estado_orden_produccion=estado_en_espera,
                             id_producto=linea.id_producto,
                             id_orden_venta=orden_venta,
-                            id_linea_produccion=(producto_linea.id_linea_produccion if producto_linea and getattr(producto_linea, 'id_linea_produccion', None) else None),
+                            #id_linea_produccion=(producto_linea.id_linea_produccion if producto_linea and getattr(producto_linea, 'id_linea_produccion', None) else None),
                             id_supervisor=default_supervisor,
+                            fecha_inicio=mañana, 
                         )
-                        print(f"Creada OrdenProduccion #{orden_prod.id_orden_produccion} para producir {cantidad_a_producir} unidades (múltiplo de {cant_por_hora}) asociada a OrdenVenta #{orden_venta.pk}")
+                        print(f"Creada OrdenProduccion #{orden_prod.id_orden_produccion} para producir {cantidad_faltante_a_reservar} unidades (múltiplo de {cant_por_hora}) asociada a OrdenVenta #{orden_venta.pk}")
 
                         # Programar la gestión de reservas para que se ejecute después del commit
                         try:

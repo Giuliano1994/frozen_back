@@ -55,7 +55,8 @@ class CrearOrdenDespachoSerializer(serializers.Serializer):
         with transaction.atomic():
             # --- 1️⃣ Crear repartidor ---
             repartidor_data = validated_data.pop('repartidor')
-            repartidor = Repartidor.objects.create(**repartidor_data)
+            print(repartidor_data)
+            repartidor = Repartidor.objects.get(patente=repartidor_data['patente'])
 
             # --- 2️⃣ Crear orden de despacho ---
             # Estado de despacho por defecto: "En Reparto"

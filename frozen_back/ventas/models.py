@@ -38,6 +38,9 @@ class Cliente(models.Model):
         blank=True,                # Permite que en formularios y el admin el campo esté vacío.
         db_column="id_prioridad"
     )
+    calle = models.CharField(max_length=255, null=True, blank=True)
+    altura = models.CharField(max_length=20, null=True, blank=True)
+    localidad = models.CharField(max_length=100, null=True, blank=True)
 
 
     class Meta:

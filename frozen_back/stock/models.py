@@ -85,41 +85,6 @@ class LoteProduccionMateria(models.Model):
 
 
 
-"""
-class ReservaStock(models.Model):
- #    Este modelo vincula una orden de venta con un lote de producción,
-#    registrando la cantidad exacta reservada de ese lote para esa orden.
-  
-    id_reserva = models.AutoField(primary_key=True)
-    
-    # La línea de la orden que necesita el producto
-    id_orden_venta_producto = models.ForeignKey(
-        'ventas.OrdenVentaProducto', # Usamos string para evitar importación circular
-        on_delete=models.CASCADE,
-        related_name="reservas"
-    )
-    
-    # El lote del cual se está reservando el stock
-    id_lote_produccion = models.ForeignKey(
-        LoteProduccion, 
-        on_delete=models.CASCADE,
-        related_name="reservas"
-    )
-    
-    # La cantidad reservada en esta transacción específica
-    cantidad_reservada = models.PositiveIntegerField()
-    
-    fecha_reserva = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = "reserva_stock"
-        unique_together = ('id_orden_venta_producto', 'id_lote_produccion')
-"""
-
-
-
-
-
 
 class EstadoReserva(models.Model):
     id_estado_reserva = models.AutoField(primary_key=True)

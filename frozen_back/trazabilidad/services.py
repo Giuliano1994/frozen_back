@@ -12,7 +12,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from ventas.models import OrdenVentaProducto
 from stock.models import ReservaStock, LoteProduccionMateria, LoteMateriaPrima
 from ventas.models import OrdenVenta, OrdenVentaProducto
-from produccion.models import OrdenProduccion, NoConformidad
+from produccion.models import OrdenDeTrabajo, OrdenProduccion, NoConformidad
 # (No necesitamos importar todos los modelos, solo los puntos de entrada 
 # y los que usamos para select_related)
 
@@ -20,103 +20,73 @@ from produccion.models import OrdenProduccion, NoConformidad
 
 
 
-def get_traceability_backward(id_orden_venta_producto):
+def get_traceability_backward(id_orden_produccion):
     
     """
-    Realiza la trazabilidad HACIA ATRÁS (Backward Traceability).
-
-    Comienza desde un producto entregado a un cliente (OrdenVentaProducto)
-    y rastrea hacia atrás para encontrar qué lotes de producción se usaron,
-    quién los hizo, y qué lotes de materia prima se consumieron, 
-    incluyendo sus proveedores.
-
-    Args:
-        id_orden_venta_producto (int): El ID del ítem específico en la orden de venta.
-
-    Returns:
-        dict: Un diccionario estructurado con todo el historial de trazabilidad.
-              En caso de error, devuelve {"error": "mensaje..."}.
+    Rastrea hacia atrás desde una Orden de Producción (OP) específica,
+    incluyendo las Ordenes de Trabajo (OT), No Conformidades y Materias Primas.
     """
     
-    report = {}
+    op_report = {}
     try:
-        # 1. PUNTO DE PARTIDA: El producto vendido
-        ovp = OrdenVentaProducto.objects.select_related(
-            'id_orden_venta__id_cliente', 
-            'id_producto'
-        ).get(pk=id_orden_venta_producto)
-
-        report['consulta'] = {
-            'tipo': 'Trazabilidad Hacia Atrás',
-            'id_orden_venta_producto': ovp.id_orden_venta_producto,
-            'id_orden_venta': ovp.id_orden_venta_id,
-        }
-        report['cliente'] = {
-            'id_cliente': ovp.id_orden_venta.id_cliente.id_cliente,
-            'nombre': ovp.id_orden_venta.id_cliente.nombre,
-        }
-        report['producto_reclamado'] = {
-            'id_producto': ovp.id_producto.id_producto,
-            'nombre': ovp.id_producto.nombre,
-            'cantidad': ovp.cantidad,
-        }
-
-        # 2. LOTES ENTREGADOS: ¿Qué lotes de producto terminado se usaron?
-        # (Usando el related_name "reservas" de OrdenVentaProducto)
-        reservas = ovp.reservas.filter(
-            id_estado_reserva__descripcion='Activa' # O el estado que uses para 'Entregado'
-        ).select_related(
+        # 1. PUNTO DE PARTIDA: La Orden de Producción
+        orden_produccion = OrdenProduccion.objects.select_related(
+            'id_supervisor', 
+            'id_operario',
             'id_lote_produccion'
+        ).get(pk=id_orden_produccion)
+
+        lote = orden_produccion.id_lote_produccion
+
+        if not lote:
+            return {"error": f"La Orden de Producción {id_orden_produccion} no tiene Lote de Producción asociado."}
+
+
+        op_report['orden_produccion'] = {
+            'id_orden_produccion': orden_produccion.id_orden_produccion,
+            'fecha_creacion': orden_produccion.fecha_creacion.isoformat(),
+            'cantidad_planificada': orden_produccion.cantidad,
+            'supervisor': orden_produccion.id_supervisor.nombre if orden_produccion.id_supervisor else 'N/A',
+            'operario': orden_produccion.id_operario.nombre if orden_produccion.id_operario else 'N/A',
+            'lote_asociado': lote.id_lote_produccion if lote else 'N/A',
+            'ordenes_de_trabajo': [] # Se rellena a continuación
+        }
+
+        # 2. ORDENES DE TRABAJO (OT): Obtener la información de la línea y desperdicio
+        ordenes_trabajo = OrdenDeTrabajo.objects.filter(
+            id_orden_produccion=orden_produccion
+        ).select_related(
+            'id_linea_produccion', 
+            'id_estado_orden_trabajo'
+        ).prefetch_related(
+            'no_conformidades__id_tipo_no_conformidad'
         )
         
-        if not reservas.exists():
-            report['lotes_entregados'] = []
-            report['mensaje'] = "No se encontraron lotes de producción reservados/entregados para este ítem."
-            return report
-
-        lotes_entregados_data = []
-        for reserva in reservas:
-            lote = reserva.id_lote_produccion
-            lote_data = {
-                'id_lote_produccion': lote.id_lote_produccion,
-                'fecha_produccion': lote.fecha_produccion,
-                'fecha_vencimiento': lote.fecha_vencimiento,
-                'cantidad_entregada_de_lote': reserva.cantidad_reservada,
-                'orden_produccion': None, # Se rellenará a continuación
-                'materias_primas_usadas': [] # Se rellenará a continuación
-            }
-
-            # 3. ORDEN DE PRODUCCIÓN: ¿Quién, cuándo y cómo se hizo este lote?
-            try:
-                orden = OrdenProduccion.objects.select_related(
-                    'id_supervisor', 
-                    'id_operario',
-                    'id_linea_produccion'
-                ).get(id_lote_produccion=lote)
-                
-                lote_data['orden_produccion'] = {
-                    'id_orden_produccion': orden.id_orden_produccion,
-                    'fecha_inicio': orden.fecha_inicio,
-                    'cantidad_planificada': orden.cantidad,
-                    'supervisor': orden.id_supervisor.nombre if orden.id_supervisor else 'N/A',
-                    'operario': orden.id_operario.nombre if orden.id_operario else 'N/A',
-                    'linea': orden.id_linea_produccion.descripcion if orden.id_linea_produccion else 'N/A',
+        if ordenes_trabajo.exists():
+            for ot in ordenes_trabajo:
+                ot_data = {
+                    'id_orden_trabajo': ot.id_orden_trabajo,
+                    'linea_produccion': ot.id_linea_produccion.descripcion,
+                    'estado': ot.id_estado_orden_trabajo.descripcion if ot.id_estado_orden_trabajo else 'N/A',
+                    'cantidad_producida_neta': ot.cantidad_producida,
+                    'inicio_real': ot.hora_inicio_real.isoformat() if ot.hora_inicio_real else 'N/A',
+                    'fin_real': ot.hora_fin_real.isoformat() if ot.hora_fin_real else 'N/A',
+                    'desperdicios_reportados': [
+                        {
+                            'tipo': nc.id_tipo_no_conformidad.nombre,
+                            'cantidad_desperdiciada': nc.cant_desperdiciada
+                        } 
+                        for nc in ot.no_conformidades.all()
+                    ]
                 }
+                op_report['orden_produccion']['ordenes_de_trabajo'].append(ot_data)
+        else:
+            op_report['orden_produccion']['ordenes_de_trabajo'] = [{'error': 'No se encontraron Órdenes de Trabajo asociadas a esta OP.'}]
 
-                # 4. DESPERDICIO: ¿Hubo problemas en esa orden?
-                desperdicios = NoConformidad.objects.filter(id_orden_produccion=orden)
-                lote_data['orden_produccion']['desperdicios_reportados'] = [
-                    {
-                        'descripcion': d.descripcion,
-                        'cantidad_desperdiciada': d.cant_desperdiciada
-                    } for d in desperdicios
-                ]
-
-            except ObjectDoesNotExist:
-                lote_data['orden_produccion'] = {'error': 'No se encontró la orden de producción asociada a este lote.'}
-
-
-            # 5. MATERIAS PRIMAS: ¿Qué ingredientes se usaron para este lote?
+        # 3. MATERIAS PRIMAS: ¿Qué ingredientes se usaron para este lote?
+        mp_data = []
+        if lote:
+            # NOTA: Necesitas tener el modelo LoteProduccionMateria importado
             materias_usadas = LoteProduccionMateria.objects.filter(
                 id_lote_produccion=lote
             ).select_related(
@@ -125,7 +95,6 @@ def get_traceability_backward(id_orden_venta_producto):
                 'id_lote_materia_prima__id_materia_prima__id_proveedor'
             )
 
-            mp_data = []
             for mp_link in materias_usadas:
                 lote_mp = mp_link.id_lote_materia_prima
                 materia_prima = lote_mp.id_materia_prima
@@ -135,24 +104,18 @@ def get_traceability_backward(id_orden_venta_producto):
                     'id_lote_materia_prima': lote_mp.id_lote_materia_prima,
                     'nombre_materia_prima': materia_prima.nombre,
                     'cantidad_usada': mp_link.cantidad_usada,
-                    'fecha_vencimiento_mp': lote_mp.fecha_vencimiento,
-                    'proveedor': {
-                        'id_proveedor': proveedor.id_proveedor,
-                        'nombre': proveedor.nombre
-                    }
+                    'proveedor': {'id_proveedor': proveedor.id_proveedor, 'nombre': proveedor.nombre}
                 })
-            
-            lote_data['materias_primas_usadas'] = mp_data
-            lotes_entregados_data.append(lote_data)
-
-        report['lotes_entregados'] = lotes_entregados_data
-        return report
+        
+        op_report['materias_primas_usadas'] = mp_data
+        
+        return op_report
 
     except ObjectDoesNotExist:
-        return {"error": f"No se encontró la línea de orden de venta con ID {id_orden_venta_producto}"}
+        # Error específico de esta función
+        return {"error": f"No se encontró la Orden de Producción con ID {id_orden_produccion}"}
     except Exception as e:
-        return {"error": f"Error inesperado: {str(e)}"}
-
+        return {"error": f"Error inesperado al rastrear la OP {id_orden_produccion}: {str(e)}"}
 
 
 
@@ -160,17 +123,8 @@ def get_traceability_backward(id_orden_venta_producto):
 def get_traceability_for_order(id_orden_venta):
     """
     Realiza la trazabilidad HACIA ATRÁS para TODOS los productos 
-    de una Orden de Venta completa.
-
-    Esta función actúa como un agregador, llamando a 
-    get_traceability_backward() para cada línea de producto.
-
-    Args:
-        id_orden_venta (int): El ID de la OrdenVenta principal.
-
-    Returns:
-        dict: Un diccionario con el reporte de trazabilidad de todos
-              los productos de la orden.
+    de una Orden de Venta completa, navegando a través de 
+    OrdenVentaProducto -> OrdenProduccion -> OrdenDeTrabajo.
     """
     
     try:
@@ -193,26 +147,41 @@ def get_traceability_for_order(id_orden_venta):
                 'id_cliente': orden.id_cliente.id_cliente,
                 'nombre': orden.id_cliente.nombre,
             },
-            'productos_trazados': [] # Aquí irá la lista
+            'productos_trazados': [] 
         }
 
-        # 4. Iterar sobre CADA línea y llamar al servicio que ya teníamos
+        # 4. Iterar sobre CADA línea y buscar la OP asociada (LA LÓGICA CORREGIDA)
         for linea in lineas_de_la_orden:
-            # Reutilizamos la función existente pasándole el ID de la LÍNEA (ej. 301)
-            trace_report_linea = get_traceability_backward(linea.id_orden_venta_producto)
+            producto_report = {
+                'id_orden_venta_producto': linea.id_orden_venta_producto,
+                'producto': linea.id_producto.nombre if linea.id_producto else 'Desconocido',
+                'cantidad_vendida': linea.cantidad,
+                'ordenes_produccion': []
+            }
+
+            # Buscar las Ordenes de Producción (OP) asociadas a esta OrdenVenta y Producto
+            ordenes_produccion_relacionadas = OrdenProduccion.objects.filter(
+                id_orden_venta=orden,
+                id_producto=linea.id_producto 
+            ).order_by('-fecha_creacion') 
             
-            # Limpiamos el reporte individual para no repetir datos
-            if 'error' in trace_report_linea:
-                full_report['productos_trazados'].append({
-                    'id_orden_venta_producto': linea.id_orden_venta_producto,
-                    'error': trace_report_linea['error']
+            if not ordenes_produccion_relacionadas.exists():
+                producto_report['ordenes_produccion'].append({
+                    'error': 'No se encontraron Órdenes de Producción para este producto en la venta.'
                 })
             else:
-                # Agregamos solo las partes relevantes del sub-reporte
-                full_report['productos_trazados'].append({
-                    'producto_reclamado': trace_report_linea.get('producto_reclamado'),
-                    'lotes_entregados': trace_report_linea.get('lotes_entregados')
-                })
+                for op in ordenes_produccion_relacionadas:
+                    # LLAMADA CORREGIDA: Usamos la nueva función auxiliar
+                    trace_report_op = get_traceability_backward(op.id_orden_produccion)
+                    
+                    if 'error' in trace_report_op:
+                        producto_report['ordenes_produccion'].append({'error': trace_report_op['error']})
+                    else:
+                        producto_report['ordenes_produccion'].append(trace_report_op['orden_produccion'])
+                        producto_report['materias_primas_usadas'] = trace_report_op['materias_primas_usadas']
+            
+            full_report['productos_trazados'].append(producto_report)
+
 
         return full_report
 

@@ -6,7 +6,7 @@ from stock.models import LoteProduccion
 from rest_framework import viewsets, filters
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.decorators import api_view  # <- IMPORT IMPORTANTE
+from rest_framework.decorators import api_view, action  # <- IMPORT IMPORTANTE
 from django_filters.rest_framework import DjangoFilterBackend
 from stock.services import get_stock_disponible_para_producto,  verificar_stock_y_enviar_alerta, get_stock_disponible_todos_los_productos
 from django.views.decorators.csrf import csrf_exempt
@@ -54,11 +54,39 @@ class LoteProduccionViewSet(viewsets.ModelViewSet):
     search_fields = ["id_producto__nombre"]
     filterset_fields = ["id_producto", "id_estado_lote_produccion", "fecha_produccion", "fecha_vencimiento"]
 
+    @action(detail=False, methods=['delete'], url_path='bulk-delete')
+    def bulk_delete(self, request):
+        inicio = request.query_params.get('inicio')
+        fin = request.query_params.get('fin')
+
+        if not inicio or not fin:
+            return Response({"detail": "Se requieren parámetros 'inicio' y 'fin'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            inicio = int(inicio)
+            fin = int(fin)
+        except ValueError:
+            return Response({"detail": "Los parámetros deben ser enteros"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Ajuste para que funcione aunque los IDs estén en cualquier orden
+        orden_min = min(inicio, fin)
+        orden_max = max(inicio, fin)
+
+        lotes = LoteProduccion.objects.filter(id_lote_produccion__gte=orden_min,
+                                              id_lote_produccion__lte=orden_max)
+        count = lotes.count()
+        lotes.delete()  # borrará reservas y relaciones en cascada
+        return Response({"detail": f"{count} lotes de producción borrados"}, status=status.HTTP_204_NO_CONTENT)
+
+
 @api_view(["GET"])
 def obtener_lotes_de_materia_prima(request, id_materia_prima):
     lotes = LoteMateriaPrima.objects.filter(id_materia_prima=id_materia_prima)
     serializer = LoteMateriaPrimaSerializer(lotes, many=True)
     return Response(serializer.data)
+
+
+
 
 class LoteMateriaPrimaViewSet(viewsets.ModelViewSet):
     queryset = LoteMateriaPrima.objects.all()
@@ -80,6 +108,31 @@ class LoteMateriaPrimaViewSet(viewsets.ModelViewSet):
 
         # 2. Llama al servicio para que revise las órdenes pendientes
         procesar_ordenes_en_espera(nuevo_lote.id_materia_prima)
+
+
+    @action(detail=False, methods=['delete'], url_path='bulk-delete')
+    def bulk_delete(self, request):
+        inicio = request.query_params.get('inicio')
+        fin = request.query_params.get('fin')
+
+        if not inicio or not fin:
+            return Response({"detail": "Se requieren parámetros 'inicio' y 'fin'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            inicio = int(inicio)
+            fin = int(fin)
+        except ValueError:
+            return Response({"detail": "Los parámetros deben ser enteros"}, status=status.HTTP_400_BAD_REQUEST)
+
+        orden_min = min(inicio, fin)
+        orden_max = max(inicio, fin)
+
+        lotes = LoteMateriaPrima.objects.filter(id_lote_materia_prima__gte=orden_min,
+                                                id_lote_materia_prima__lte=orden_max)
+        count = lotes.count()
+        lotes.delete()  # borrará reservas y relaciones en cascada
+        return Response({"detail": f"{count} lotes de materia prima borrados"}, status=status.HTTP_204_NO_CONTENT)
+
 
 
 

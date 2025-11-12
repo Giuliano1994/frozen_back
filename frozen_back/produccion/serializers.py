@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import EstadoOrdenProduccion, LineaProduccion, OrdenProduccion, NoConformidad, estado_linea_produccion
+from .models import EstadoOrdenProduccion, LineaProduccion, OrdenProduccion, NoConformidad, TipoNoConformidad, estado_linea_produccion, OrdenDeTrabajo
 from empleados.models import Empleado
 from productos.models import Producto
 from stock.models import LoteProduccion, EstadoLoteProduccion
@@ -18,7 +18,7 @@ class LineaProduccionSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class EstadoLineaProduccionSerializer(serializers.ModelSerializer):
-    class Meta:
+    class Meta: 
         model = estado_linea_produccion
         fields = '__all__'
 
@@ -52,7 +52,7 @@ class LoteProduccionSerializer(serializers.ModelSerializer):
 class OrdenProduccionCreateSerializer(serializers.ModelSerializer):
     # Campos que se aceptan como IDs en la entrada pero se devuelven como objetos completos
     id_producto = serializers.PrimaryKeyRelatedField(queryset=Producto.objects.all(), write_only=True)
-    id_linea_produccion = serializers.PrimaryKeyRelatedField(queryset=LineaProduccion.objects.all(), write_only=True, required=False)
+#    id_linea_produccion = serializers.PrimaryKeyRelatedField(queryset=LineaProduccion.objects.all(), write_only=True, required=False)
     id_supervisor = serializers.PrimaryKeyRelatedField(queryset=Empleado.objects.all(), write_only=True, required=False)
     id_operario = serializers.PrimaryKeyRelatedField(queryset=Empleado.objects.all(), write_only=True, required=False)
     
@@ -77,8 +77,8 @@ class OrdenProduccionCreateSerializer(serializers.ModelSerializer):
         # Reemplazar los campos write_only con objetos completos
         if instance.id_producto:
             data['id_producto'] = ProductoSerializer(instance.id_producto).data
-        if instance.id_linea_produccion:
-            data['id_linea_produccion'] = LineaProduccionSerializer(instance.id_linea_produccion).data
+      #  if instance.id_linea_produccion:
+      #      data['id_linea_produccion'] = LineaProduccionSerializer(instance.id_linea_produccion).data
         if instance.id_supervisor:
             data['id_supervisor'] = EmpleadoSerializer(instance.id_supervisor).data
         if instance.id_operario:
@@ -88,7 +88,7 @@ class OrdenProduccionCreateSerializer(serializers.ModelSerializer):
 
 class OrdenProduccionSerializer(serializers.ModelSerializer):
     id_estado_orden_produccion = EstadoOrdenProduccionSerializer(read_only=True)
-    id_linea_produccion = LineaProduccionSerializer(read_only=True)
+#    id_linea_produccion = LineaProduccionSerializer(read_only=True)
     id_supervisor = EmpleadoSerializer(read_only=True)
     id_operario = EmpleadoSerializer(read_only=True)
     id_producto = ProductoSerializer(read_only=True)
@@ -118,11 +118,27 @@ class OrdenProduccionUpdateEstadoSerializer(serializers.ModelSerializer):
 # ------------------------------
 # Serializer de NoConformidad
 # ------------------------------
-class NoConformidadSerializer(serializers.ModelSerializer):
+# Nuevo Serializer para el Tipo de No Conformidad
+class TipoNoConformidadSerializer(serializers.ModelSerializer):
     class Meta:
-        model = NoConformidad
+        model = TipoNoConformidad
         fields = '__all__'
 
+# Serializer para crear una No Conformidad desde la OT (incluye el nuevo FK)
+class NoConformidadCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NoConformidad
+        # Asegúrate de incluir el nuevo campo 'id_tipo_no_conformidad'
+        fields = ['cant_desperdiciada', 'id_tipo_no_conformidad', 'id_orden_trabajo']
+        read_only_fields = ['id_orden_trabajo'] 
+
+# Serializer principal de NoConformidad (para lectura/listado)
+class NoConformidadSerializer(serializers.ModelSerializer):
+    tipo_no_conformidad = TipoNoConformidadSerializer(source='id_tipo_no_conformidad', read_only=True)
+    
+    class Meta:
+        model = NoConformidad
+        fields = ['id_no_conformidad', 'id_orden_trabajo', 'id_tipo_no_conformidad', 'tipo_no_conformidad', 'cant_desperdiciada']
 
 
 class HistoricalOrdenProduccionSerializer(serializers.ModelSerializer):
@@ -142,3 +158,25 @@ class HistoricalOrdenProduccionSerializer(serializers.ModelSerializer):
             'id_operario', 'operario_nombre',
             'cantidad', 'fecha_inicio', 'id_lote_produccion', 'id_orden_venta'
         ]
+
+
+class OrdenDeTrabajoSerializer(serializers.ModelSerializer):
+    """
+    Serializer básico para la Orden de Trabajo.
+    """
+    # (Opcional, pero recomendado) Muestra el nombre del estado, no solo el ID
+    estado_descripcion = serializers.CharField(
+        source='id_estado_orden_trabajo.descripcion', 
+        read_only=True
+    )
+
+    producto_nombre = serializers.CharField(
+        source='id_orden_produccion.id_producto.nombre', 
+        read_only=True
+    )
+
+    class Meta:
+        model = OrdenDeTrabajo
+        fields = '__all__'
+        # Añadimos el campo opcional a la lista de 'fields' si no usas '__all__'
+        read_only_fields = ['producto_nombre']
