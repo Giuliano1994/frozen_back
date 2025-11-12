@@ -10,11 +10,12 @@ class estadoOrdenCompraSerializer(serializers.ModelSerializer):
 
 class OrdenCompraMateriaPrimaSerializer(serializers.ModelSerializer):
     materia_prima_nombre = serializers.CharField(source='id_materia_prima.nombre', read_only=True)
+    unidad_medida_descripcion = serializers.CharField(source='id_materia_prima.id_unidad.descripcion', read_only=True)
 
     class Meta:
         model = OrdenCompraMateriaPrima
         # Incluimos todos los campos manuales que queremos mostrar
-        fields = ['id_materia_prima', 'cantidad', 'materia_prima_nombre']
+        fields = ['id_materia_prima', 'cantidad', 'materia_prima_nombre', 'unidad_medida_descripcion']
 
 class ordenCompraProduccionSerializer(serializers.ModelSerializer):
     orden_produccion_detalle = serializers.CharField(source='id_orden_produccion.detalle', read_only=True)
