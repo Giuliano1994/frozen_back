@@ -236,21 +236,26 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
     # PASO 4: NETTING Y CREACIÓN DE ÓRDENES DE PRODUCCIÓN (Req 4)
     # ===================================================================
     print(f"\n[PASO 4/6] Netting (Balance) y Creación de OPs...")
-    
+
     # ops_a_procesar_en_paso_5 contendrá: (op_creada, dict_faltante_mp)
     ops_a_procesar_en_paso_5 = []
-    
-    # --- INICIO DE CORRECCIÓN ---
+
     # Obtenemos TODOS los productos que tienen demanda O producción en curso
     productos_en_produccion_ids = OrdenProduccion.objects.filter(
         # La oferta son TODAS las OPs que no están terminadas ni canceladas
         id_estado_orden_produccion__in=[estado_op_en_espera, estado_op_pendiente_inicio, estado_op_en_proceso]
     ).values_list('id_producto_id', flat=True)
-    
+
     todos_los_productos_ids = set(demanda_neta_produccion.keys()) | set(productos_en_produccion_ids)
     print(f"  > Analizando {len(todos_los_productos_ids)} productos para netting de producción...")
 
     for producto_id in todos_los_productos_ids:
+        # 🚨 INICIALIZACIÓN DE VARIABLES CRÍTICAS PARA EVITAR UnboundLocalError
+        op = None
+        created = False
+        max_lead_time_mp = 0
+        demanda_neta_mp_op = {} # {mp_id: faltante}
+        
         producto = Producto.objects.get(pk=producto_id)
         
         # 1. ¿CUÁNTO NECESITAMOS? (Demanda Neta de PT del PASO 1 + Stock Mínimo)
@@ -260,15 +265,15 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
         necesidad_stock_minimo = max(0, producto.umbral_minimo - stock_proyectado_final)
         
         necesidad_total_produccion = cantidad_faltante_demanda + necesidad_stock_minimo
-        fecha_mas_temprana = info_demanda.get('fecha_mas_temprana', hoy + timedelta(days=7)) # Si es solo por stock min, planificar a 7 días
+        fecha_mas_temprana = info_demanda.get('fecha_mas_temprana', hoy + timedelta(days=7))
 
         # 2. ¿CUÁNTO TENEMOS EN PRODUCCIÓN? (Oferta de Producción)
-        ops_existentes = OrdenProduccion.objects.filter(
+        ops_existentes_query = OrdenProduccion.objects.filter(
             id_producto=producto, 
             id_estado_orden_produccion__in=[estado_op_en_espera, estado_op_pendiente_inicio, estado_op_en_proceso]
         )
         
-        total_en_produccion_existente = ops_existentes.aggregate(total=Sum('cantidad'))['total'] or 0
+        total_en_produccion_existente = ops_existentes_query.aggregate(total=Sum('cantidad'))['total'] or 0
 
         # 3. EL BALANCE
         balance = necesidad_total_produccion - total_en_produccion_existente
@@ -276,32 +281,28 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
         print(f"  > Netting {producto.nombre}: Demanda Total={necesidad_total_produccion} - OPs en Curso={total_en_produccion_existente} = Balance={balance}")
 
         if balance > 0:
-            # --- FALTANTE: Necesitamos crear una OP nueva ---
+            # --- FALTANTE: Necesitamos crear o actualizar una OP ---
             print(f"    > Faltan {balance} unidades. Planificando OP...")
             
             cantidad_a_producir_total = balance
             fecha_entrega_ov = fecha_mas_temprana
 
             try:
-                # --- LÓGICA DE LEAD TIME (Req 4b) ---
+                # --- LÓGICA DE LEAD TIME (Calcula fecha_inicio_dt) ---
                 receta = Receta.objects.get(id_producto=producto)
                 ingredientes = RecetaMateriaPrima.objects.filter(id_receta=receta)
                 
-                max_lead_time_mp = 0
-                demanda_neta_mp_op = {} # {mp_id: faltante}
-                
+                # --- Cálculo de max_lead_time_mp y demanda_neta_mp_op ---
                 for ingr in ingredientes:
                     necesidad_mp = ingr.cantidad * cantidad_a_producir_total
                     stock_mp = get_stock_disponible_para_materia_prima(ingr.id_materia_prima_id)
                     
-                    # --- CORRECCIÓN: Calcular faltante restando OCs en proceso ---
                     en_compra_total = OrdenCompraMateriaPrima.objects.filter(
                         id_materia_prima=ingr.id_materia_prima,
                         id_orden_compra__id_estado_orden_compra=estado_oc_en_proceso
                     ).aggregate(total=Sum('cantidad'))['total'] or 0
                     
                     faltante_mp = max(0, necesidad_mp - stock_mp - en_compra_total)
-                    # --- FIN CORRECCIÓN ---
                     
                     if faltante_mp > 0:
                         lead_proveedor = ingr.id_materia_prima.id_proveedor.lead_time_days
@@ -312,7 +313,7 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                 if not producto_linea or not producto_linea.cant_por_hora or producto_linea.cant_por_hora <= 0:
                     print(f"    !ERROR: {producto.nombre} no tiene 'cant_por_hora'. Omitiendo OP.")
                     continue
-                
+                    
                 cant_por_hora = producto_linea.cant_por_hora
                 tiempo_prod_horas = math.ceil(cantidad_a_producir_total / cant_por_hora)
                 dias_produccion = math.ceil(tiempo_prod_horas / HORAS_LABORABLES_POR_DIA)
@@ -321,22 +322,39 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                 fecha_inicio_op = fecha_entrega_ov - timedelta(days=dias_totales_previos)
 
                 if fecha_inicio_op < hoy:
-                    print(f"    !ALERTA: OP para {producto.nombre} (requerida para {fecha_entrega_ov})")
-                    print(f"    ...debería haber empezado el {fecha_inicio_op} (Lead Time total: {dias_totales_previos} días). Planificando ASAP.")
+                    print(f"    !ALERTA: OP para {producto.nombre} (requerida para {fecha_entrega_ov}). Planificando ASAP.")
                     fecha_inicio_op = hoy + timedelta(days=1)
-                
+                    
                 fecha_inicio_dt = timezone.make_aware(datetime.combine(fecha_inicio_op, datetime.min.time()))
                 # --- FIN LÓGICA LEAD TIME ---
 
-                op, created = OrdenProduccion.objects.get_or_create(
+                # 1. Intentar encontrar una OP existente y abierta para este producto (EVITAR DUPLICADOS)
+                op_existente = OrdenProduccion.objects.filter(
                     id_producto=producto,
                     id_estado_orden_produccion=estado_op_en_espera,
-                    fecha_inicio=fecha_inicio_dt,
-                    defaults={'cantidad': cantidad_a_producir_total}
-                )
-                if created:
+                ).first()
+                
+                if op_existente:
+                    # Si existe, la actualizamos
+                    op_existente.cantidad = cantidad_a_producir_total
+                    op_existente.fecha_inicio = fecha_inicio_dt
+                    op_existente.save()
+                    op = op_existente
+                    created = False # 🚨 Se mantiene como False
+                    print(f"    -> ACTUALIZADA OP {op.id_orden_produccion}: Total ahora es {op.cantidad}. Fecha inicio ajustada a {fecha_inicio_op}.")
+                else:
+                    # Si no existe, creamos una nueva
+                    op = OrdenProduccion.objects.create(
+                        id_producto=producto,
+                        id_estado_orden_produccion=estado_op_en_espera,
+                        fecha_inicio=fecha_inicio_dt,
+                        cantidad=cantidad_a_producir_total
+                    )
+                    created = True # 🚨 Se define aquí cuando es True
                     print(f"    -> CREADA OP {op.id_orden_produccion} para {cantidad_a_producir_total} de {producto.nombre} (Inicio: {fecha_inicio_op})")
-                    # --- INICIO DE CORRECCIÓN: CREAR EL LOTE ASOCIADO ---
+
+                # 2. Lógica de creación/asignación del Lote
+                if created or not op.id_lote_produccion:
                     try:
                         estado_lote_espera = EstadoLoteProduccion.objects.get(descripcion__iexact="En espera")
                         dias_duracion = getattr(producto, 'dias_duracion', 0) or 0
@@ -348,25 +366,24 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                             fecha_produccion=timezone.now().date(), 
                             fecha_vencimiento=timezone.now().date() + timedelta(days=dias_duracion)
                         )
-                        
-                        # Asignamos el lote a la OP
                         op.id_lote_produccion = lote
-                        op.save()
+                        op.save(update_fields=['id_lote_produccion'])
                         print(f"    -> CREADO LoteProduccion {lote.id_lote_produccion} y asignado a OP {op.id_orden_produccion}")
 
                     except EstadoLoteProduccion.DoesNotExist:
-                        print(f"    !ERROR CRÍTICO: No se pudo crear Lote. Estado 'En espera' no existe en EstadoLoteProduccion.")
+                        print(f"    !ERROR CRÍTICO: No se pudo crear Lote. Estado 'En espera' no existe.")
                     except Exception as e_lote:
                         print(f"    !ERROR CRÍTICO al crear Lote para OP {op.id_orden_produccion}: {e_lote}")
-                    # --- FIN DE CORRECCIÓN ---
                 
-                else:
-                    OrdenProduccion.objects.filter(pk=op.pk).update(cantidad=F('cantidad') + cantidad_a_producir_total)
-                    op.refresh_from_db() 
-                    print(f"    -> ACTUALIZADA OP {op.id_orden_produccion}: +{cantidad_a_producir_total} de {producto.nombre} (Total: {op.cantidad})")
+                # 3. Actualizamos la cantidad del lote si la OP fue actualizada
+                elif op and not created and op.id_lote_produccion:
+                    op.id_lote_produccion.cantidad = op.cantidad
+                    op.id_lote_produccion.save()
 
-                # Agregamos la OP nueva a la lista del PASO 5
-                ops_a_procesar_en_paso_5.append( (op, demanda_neta_mp_op) )
+
+                # 4. Agregamos la OP a la lista del PASO 5
+                if op:
+                    ops_a_procesar_en_paso_5.append( (op, demanda_neta_mp_op) )
                 
             except Receta.DoesNotExist:
                 print(f"    !ERROR: {producto.nombre} no tiene Receta. Omitiendo OP.")
@@ -379,7 +396,7 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
             print(f"  > {producto.nombre}: Demanda ({necesidad_total_produccion}) < Producción ({total_en_produccion_existente}). Sobran {cantidad_a_cancelar}. Cancelando OPs...")
             
             # Cancelamos OPs "En espera" primero (de más nueva a más vieja)
-            ops_en_espera_a_cancelar = ops_existentes.filter(id_estado_orden_produccion=estado_op_en_espera).order_by('-fecha_inicio')
+            ops_en_espera_a_cancelar = ops_existentes_query.filter(id_estado_orden_produccion=estado_op_en_espera).order_by('-fecha_inicio')
             
             for op in ops_en_espera_a_cancelar:
                 if cantidad_a_cancelar <= 0: break
@@ -397,7 +414,7 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
 
             if cantidad_a_cancelar > 0:
                 print(f"    !ALERTA: Aún sobran {cantidad_a_cancelar} unidades, pero no hay más OPs 'En espera' para cancelar.")
-        
+            
         # else: # balance == 0
             # No hacemos nada, el balance es correcto.
 
