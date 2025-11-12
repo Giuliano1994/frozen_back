@@ -106,66 +106,8 @@ def get_stock_disponible_para_producto(id_producto):
 
 
 
-# --- NUEVA FUNCIÓN REUTILIZABLE ---
-def verificar_stock_para_orden_venta(orden_venta):
-    """
-    Verifica si hay stock disponible para todos los productos de una orden de venta.
-    Devuelve True si hay stock para todo, False en caso contrario.
-    """
-    from ventas.models import OrdenVentaProducto # Importación local para evitar importación circular
-    
-    productos_orden = OrdenVentaProducto.objects.filter(id_orden_venta=orden_venta)
-    
-    if not productos_orden.exists():
-        return True # Una orden sin productos no tiene problemas de stock
 
-    for item in productos_orden:
-        disponible = get_stock_disponible_para_producto(item.id_producto.pk)
-        if disponible < item.cantidad:
-            print(f"Stock insuficiente para {item.id_producto.nombre}. Necesario: {item.cantidad}, Disponible: {disponible}")
-            return False # Si falta stock para un producto, paramos y devolvemos False
-    
-    return True # Si el bucle termina, hay stock para todos
 
-# --- NUEVA FUNCIÓN REUTILIZABLE ---
-@transaction.atomic
-def descontar_stock_para_orden_venta(orden_venta):
-    """
-    Descuenta del stock la cantidad de productos de una orden de venta.
-    Usa una estrategia FIFO (primero los lotes que vencen antes).
-    Esta función asume que el stock ya fue verificado.
-    """
-    from ventas.models import OrdenVentaProducto # Importación local
-    
-    productos_orden = OrdenVentaProducto.objects.filter(id_orden_venta=orden_venta)
-    estado_disponible = EstadoLoteProduccion.objects.get(descripcion="Disponible")
-    estado_agotado, _ = EstadoLoteProduccion.objects.get_or_create(descripcion="Agotado")
-
-    for item in productos_orden:
-        cantidad_a_descontar = item.cantidad
-        lotes = LoteProduccion.objects.filter(
-            id_producto=item.id_producto,
-            id_estado_lote_produccion=estado_disponible,
-            cantidad__gt=0
-        ).order_by("fecha_vencimiento")
-
-        for lote in lotes:
-            if cantidad_a_descontar <= 0:
-                break
-            
-            cantidad_tomada = min(lote.cantidad, cantidad_a_descontar)
-            
-            lote.cantidad -= cantidad_tomada
-            cantidad_a_descontar -= cantidad_tomada
-            
-            if lote.cantidad == 0:
-                lote.id_estado_lote_produccion = estado_agotado
-            
-            lote.save()
-
-       
-        # Después de actualizar los lotes para este producto, llamamos a la función de alerta.
-        verificar_stock_y_enviar_alerta(item.id_producto.pk)
 
 
 def verificar_stock_y_enviar_alerta(id_producto):
@@ -274,7 +216,7 @@ def get_stock_disponible_para_materia_prima(id_materia_prima):
     # 2. Anotamos cada lote de MP con la suma de sus reservas activas.
     lotes_con_reservas = LoteMateriaPrima.objects.filter(
         id_materia_prima_id=id_materia_prima,
-        id_estado_lote_materia_prima__descripcion="Disponible"
+        id_estado_lote_materia_prima__descripcion="disponible"
     ).annotate(
         total_reservado=Coalesce(Sum('reservas__cantidad_reservada', filter=filtro_reservas_activas), 0)
     )

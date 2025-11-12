@@ -3,6 +3,7 @@ from collections import defaultdict
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q
+from datetime import timedelta, date, datetime
 
 from produccion.models import (
     OrdenProduccion,
@@ -21,9 +22,10 @@ SOLVER_MAX_SECONDS = 30
 SOLVER_WORKERS = 8
 
 
-def ejecutar_planificador():
+def ejecutar_planificador(fecha_simulada: date):
 
-    mañana = timezone.localdate() + timezone.timedelta(days=1)
+    mañana = fecha_simulada + timezone.timedelta(days=1)
+    #mañana = timezone.localdate() + timezone.timedelta(days=1)
 
     # ✅ 1) Seleccionar solo OP para mañana
     ordenes = list(

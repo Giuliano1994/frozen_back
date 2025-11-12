@@ -4,11 +4,10 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import transaction
-from produccion.services import gestionar_reservas_para_orden_produccion, descontar_stock_reservado, calcular_porcentaje_desperdicio_historico, verificar_y_actualizar_op_segun_ots
-from recetas.models import Receta, RecetaMateriaPrima
+from produccion.services import descontar_stock_reservado, calcular_porcentaje_desperdicio_historico, verificar_y_actualizar_op_segun_ots
 from productos.models import Producto
 from .models import EstadoOrdenProduccion, EstadoOrdenTrabajo, LineaProduccion, OrdenProduccion, NoConformidad, PausaOT, TipoNoConformidad, estado_linea_produccion, OrdenDeTrabajo
-from stock.models import EstadoLoteMateriaPrima, LoteMateriaPrima, LoteProduccion, EstadoLoteProduccion, LoteProduccionMateria, EstadoReservaMateria, ReservaMateriaPrima
+from stock.models import LoteProduccion, EstadoLoteProduccion, EstadoReservaMateria, ReservaMateriaPrima
 from .serializers import (
     EstadoOrdenProduccionSerializer,
     LineaProduccionSerializer,
@@ -25,7 +24,6 @@ from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Sum
 from rest_framework.exceptions import ValidationError
-from ventas.services import revisar_ordenes_de_venta_pendientes
 from rest_framework.decorators import api_view
 # ------------------------------
 # ViewSets básicos
@@ -397,19 +395,26 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         """
-        Crea una nueva orden de producción:
-        - Gestiona reservas de materias primas
-        - Determina el estado inicial según stock disponible
-        - Crea automáticamente el lote de producción asociado
+        Crea una nueva orden de producción (manualmente).
+        - La deja 'En espera'.
+        - Crea el lote de producción asociado.
+        - NO llama al planificador. El planificador la procesará.
         """
         # Guardar la orden inicialmente
-        estado_inicial = EstadoOrdenProduccion.objects.get(descripcion__iexact="En espera")
+        try:
+            estado_inicial = EstadoOrdenProduccion.objects.get(descripcion__iexact="En espera")
+        except EstadoOrdenProduccion.DoesNotExist:
+            raise ValidationError({"error": 'No existe el estado "En espera"'})
+            
         orden = serializer.save(id_estado_orden_produccion=estado_inicial)
 
-        # Gestionar reservas de materias primas
-        gestionar_reservas_para_orden_produccion(orden)
+        # --- LÓGICA DE PLANIFICACIÓN ELIMINADA ---
+        # # Gestionar reservas de materias primas
+        # gestionar_reservas_para_orden_produccion(orden) # <--- ELIMINADO
+        print(f"OP {orden.id_orden_produccion} creada manualmente. El planificador la procesará.")
+        # --- FIN DE CAMBIO ---
 
-        # Crear el lote de producción automáticamente
+        # Crear el lote de producción automáticamente (Esto está bien)
         try:
             estado_espera = EstadoLoteProduccion.objects.get(descripcion__iexact="En espera")
         except EstadoLoteProduccion.DoesNotExist:

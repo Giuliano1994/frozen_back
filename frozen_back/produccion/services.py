@@ -1,19 +1,15 @@
 
 from django.db import transaction, models
-from django.db.models import Sum, Q, Count
-from .models import OrdenProduccion, EstadoOrdenProduccion, OrdenProduccion, NoConformidad
+from django.db.models import Sum, Q
+from .models import OrdenProduccion, EstadoOrdenProduccion, OrdenProduccion
 from stock.models import LoteMateriaPrima, EstadoLoteMateriaPrima, LoteProduccionMateria, ReservaMateriaPrima, EstadoReservaMateria
 from recetas.models import Receta, RecetaMateriaPrima
 from django.core.exceptions import ValidationError
 from recetas.models import Receta, RecetaMateriaPrima
 from stock.services import verificar_stock_mp_y_enviar_alerta
-from compras.models import OrdenCompra, OrdenCompraMateriaPrima, OrdenCompraProduccion, EstadoOrdenCompra
-from django.utils import timezone
-from materias_primas.models import MateriaPrima
-from collections import defaultdict
-import math
+
 from stock.models import EstadoLoteProduccion
-from productos.models import Producto
+
 
 @transaction.atomic
 def procesar_ordenes_en_espera(materia_prima_ingresada):
@@ -153,115 +149,8 @@ def procesar_ordenes_en_espera(materia_prima_ingresada):
             print(f"Advertencia: La orden #{orden.id_orden_produccion} no tiene receta asociada. Se omite.")
             continue
 
-@transaction.atomic
-def gestionar_reservas_para_orden_produccion(orden):
-    """
-    Orquesta la reserva de materias primas para una orden de producción.
-    """
 
-    estado_activa, _ = EstadoReservaMateria.objects.get_or_create(descripcion="Activa")
-    estado_cancelada, _ = EstadoReservaMateria.objects.get_or_create(descripcion="Cancelada")
 
-    # Cancelar reservas anteriores activas
-    ReservaMateriaPrima.objects.filter(
-        id_orden_produccion=orden,
-        id_estado_reserva_materia=estado_activa
-    ).update(id_estado_reserva_materia=estado_cancelada)
-
-    # Buscar receta
-    try:
-        receta = Receta.objects.get(id_producto=orden.id_producto)
-    except Receta.DoesNotExist:
-        raise ValidationError({"error": f"No se encontró receta para el producto {orden.id_producto.nombre}"})
-
-    ingredientes = RecetaMateriaPrima.objects.filter(id_receta=receta)
-    estado_disponible = EstadoLoteMateriaPrima.objects.get(descripcion__iexact="Disponible")
-
-    stock_completo = True
-
-    # Recolectar faltantes por proveedor para agrupar pedidos
-    faltantes_por_proveedor = defaultdict(list)  # proveedor -> list of (materia, faltante)
-
-    for ingrediente in ingredientes:
-        materia = ingrediente.id_materia_prima
-        cantidad_necesaria = ingrediente.cantidad * orden.cantidad
-
-        lotes_disponibles = LoteMateriaPrima.objects.filter(
-            id_materia_prima=materia,
-            id_estado_lote_materia_prima=estado_disponible
-        ).order_by("fecha_vencimiento")
-
-        total_stock = sum([l.cantidad_disponible for l in lotes_disponibles])
-
-        if total_stock < cantidad_necesaria:
-            stock_completo = False
-            faltante_para_mp = cantidad_necesaria - total_stock
-            proveedor = materia.id_proveedor
-            faltantes_por_proveedor[proveedor].append((materia, faltante_para_mp))
-
-        # Crear reservas disponibles (hasta la cantidad necesaria)
-        cantidad_a_reservar = cantidad_necesaria
-        for lote in lotes_disponibles:
-            if cantidad_a_reservar <= 0:
-                break
-
-            disponible = lote.cantidad_disponible
-            if disponible <= 0:
-                continue
-
-            cantidad_reservada = min(cantidad_a_reservar, disponible)
-            ReservaMateriaPrima.objects.create(
-                id_orden_produccion=orden,
-                id_lote_materia_prima=lote,
-                cantidad_reservada=cantidad_reservada,
-                id_estado_reserva_materia=estado_activa
-            )
-            cantidad_a_reservar -= cantidad_reservada
-
-    # Crear órdenes de compra agrupadas por proveedor para los faltantes
-    if faltantes_por_proveedor:
-        try:
-            estado_proceso, _ = EstadoOrdenCompra.objects.get_or_create(descripcion__iexact="En proceso")
-        except Exception:
-            estado_proceso = None
-
-        for proveedor, items in faltantes_por_proveedor.items():
-            try:
-                fecha_solicitud = timezone.now().date()
-                fecha_entrega_estimada = fecha_solicitud + timezone.timedelta(days=(proveedor.lead_time_days or 0))
-
-                orden_compra = OrdenCompra.objects.create(
-                    id_estado_orden_compra=estado_proceso,
-                    id_proveedor=proveedor,
-                    fecha_solicitud=fecha_solicitud,
-                    fecha_entrega_estimada=fecha_entrega_estimada
-                )
-
-                for materia, faltante in items:
-                    cantidad_pedido = max(faltante, materia.cantidad_minima_pedido or 1)
-                    OrdenCompraMateriaPrima.objects.create(
-                        id_orden_compra=orden_compra,
-                        id_materia_prima=materia,
-                        cantidad=cantidad_pedido
-                    )
-
-                OrdenCompraProduccion.objects.create(
-                    id_orden_compra=orden_compra,
-                    id_orden_produccion=orden
-                )
-
-                print(f"Se creó OrdenCompra #{orden_compra.id_orden_compra} para proveedor '{proveedor.nombre}' con {len(items)} items asociada a OrdenProduccion #{orden.id_orden_produccion}")
-            except Exception as e:
-                print(f"Error al crear orden de compra agrupada para proveedor {getattr(proveedor,'nombre',proveedor)}: {e}")
-
-    # Actualizar estado de la orden
-    if stock_completo:
-        estado_final = EstadoOrdenProduccion.objects.get(descripcion__iexact="Pendiente de inicio")
-    else:
-        estado_final = EstadoOrdenProduccion.objects.get(descripcion__iexact="En espera")
-
-    orden.id_estado_orden_produccion = estado_final
-    orden.save()
 
 
 @transaction.atomic
@@ -339,6 +228,9 @@ def descontar_stock_reservado(orden):
 
 
 
+
+
+
 def calcular_porcentaje_desperdicio_historico(id_producto: int, from_date=None, limit=10) -> float:
     """
     Calcula el porcentaje histórico de desperdicio usando ORDENES DE TRABAJO,
@@ -397,6 +289,8 @@ def calcular_porcentaje_desperdicio_historico(id_producto: int, from_date=None, 
     # ----- 4. Calcular porcentaje -----
     porcentaje = (total_desperdicio / total_producido) * 100.0
     return round(porcentaje, 2)
+
+
 
 
 
@@ -479,10 +373,10 @@ def verificar_y_actualizar_op_segun_ots(orden_produccion_id):
 
                 # 5.3. Revisar Ventas (si aplica)
                 if lote.id_producto:
-                    from ventas.services import revisar_ordenes_de_venta_pendientes  # <-- IMPORT LOCAL AQUÍ
+               #     from ventas.services import revisar_ordenes_de_venta_pendientes  # <-- IMPORT LOCAL AQUÍ
 
                     producto = lote.id_producto
-                    revisar_ordenes_de_venta_pendientes(producto)
+              #      revisar_ordenes_de_venta_pendientes(producto)
                     pass 
             
             # 5.4. Actualizar estado de la OP
@@ -496,3 +390,15 @@ def verificar_y_actualizar_op_segun_ots(orden_produccion_id):
 
     else:
         print(f"OP {orden.id_orden_produccion}: {ots_finalizadas}/{total_ots} OTs finalizadas. Aún no se completa.")
+
+
+
+
+
+
+
+
+
+
+
+

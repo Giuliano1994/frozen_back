@@ -12,7 +12,7 @@ from empleados.models import Empleado
 from stock.models import LoteProduccion  # según tu estructura
 from django.db import models
 from rest_framework import status
-from .services import gestionar_stock_y_estado_para_orden_venta, cancelar_orden_venta, facturar_orden_y_descontar_stock,  revisar_ordenes_de_venta_pendientes, crear_nota_credito_y_devolver_stock
+from .services import  cancelar_orden_venta, facturar_orden_y_descontar_stock, crear_nota_credito_y_devolver_stock, registrar_orden_venta_y_actualizar_estado
 from .models import Factura, OrdenVenta, Reclamo, Sugerencia, NotaCredito
 from django.db import transaction
 from .filters import OrdenVentaFilter
@@ -109,8 +109,10 @@ class OrdenVentaProductoViewSet(viewsets.ModelViewSet):
         orden_id = response.data.get("id_orden_venta")
         orden = OrdenVenta.objects.get(pk=orden_id)
         
-        # Llamamos al único servicio que gestiona todo
-        gestionar_stock_y_estado_para_orden_venta(orden)
+       # --- CAMBIO ---
+        # Llamamos al nuevo servicio simple
+        registrar_orden_venta_y_actualizar_estado(orden)
+        # --- FIN CAMBIO ---
         
         # Devolvemos la orden actualizada
         orden_serializer = OrdenVentaSerializer(orden)
@@ -129,9 +131,10 @@ class OrdenVentaProductoViewSet(viewsets.ModelViewSet):
         # Gracias a on_delete=CASCADE, esto también borra las Reservas de Stock asociadas.
         self.perform_destroy(instance)
 
-        # 3. Re-ejecutamos nuestro servicio para que recalcule todo con los productos restantes.
-        print(f"Producto eliminado de la orden #{orden.pk}. Re-evaluando estado y stock...")
-        gestionar_stock_y_estado_para_orden_venta(orden)
+       # --- CAMBIO ---
+        print(f"Producto eliminado de la orden #{orden.pk}. Registrando para planificador...")
+        registrar_orden_venta_y_actualizar_estado(orden)
+        # --- FIN CAMBIO ---
 
         # 4. Devolvemos una respuesta vacía, como es estándar en DELETE.
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -220,18 +223,10 @@ def actualizar_orden_venta(request):
                     )
                     productos_afectados_despues.add(producto_id)
                 
-                # 5. Volvemos a ejecutar el servicio de gestión sobre la orden modificada
-                gestionar_stock_y_estado_para_orden_venta(ordenVenta)
-
-                # 6. Combinamos todos los productos afectados (los que estaban y los nuevos)
-                todos_los_productos_afectados = productos_afectados_antes.union(productos_afectados_despues)
-
-            # 7. (Fuera de la transacción) Disparamos la re-evaluación para otras órdenes
-            print("Disparando re-evaluación de órdenes pendientes tras la edición...")
-            for producto_id in todos_los_productos_afectados:
-                from productos.models import Producto
-                producto = Producto.objects.get(pk=producto_id)
-                revisar_ordenes_de_venta_pendientes(producto)
+              # --- CAMBIO ---
+                # 5. Volvemos a ejecutar el servicio de gestión SIMPLE
+                registrar_orden_venta_y_actualizar_estado(ordenVenta)
+                
 
             # --- FIN DE LA MODIFICACIÓN ---
 
@@ -361,8 +356,10 @@ def crear_orden_venta(request):
                         cantidad=p["cantidad"]
                     )
 
-                # LLAMADA ÚNICA AL SERVICIO ORQUESTADOR
-                gestionar_stock_y_estado_para_orden_venta(orden_venta)
+               # --- CAMBIO ---
+                # LLAMADA ÚNICA AL SERVICIO SIMPLE
+                registrar_orden_venta_y_actualizar_estado(orden_venta)
+                # --- FIN CAMBIO ---
 
             # Devolvemos la orden con su estado final y todos sus datos
             serializer = OrdenVentaSerializer(orden_venta)
