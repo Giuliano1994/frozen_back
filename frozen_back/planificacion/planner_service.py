@@ -31,7 +31,7 @@ def ejecutar_planificador(fecha_simulada: date):
     ordenes = list(
         OrdenProduccion.objects.filter(
             id_estado_orden_produccion__descripcion="Pendiente de inicio",
-            fecha_inicio__date=mañana
+            fecha_planificada=mañana
         ).select_related("id_producto")
     )
 
@@ -205,7 +205,7 @@ def ejecutar_planificador(fecha_simulada: date):
     estado_ot = EstadoOrdenTrabajo.objects.get(descripcion="Pendiente")
     estado_op = EstadoOrdenProduccion.objects.get(descripcion="Planificada")
 
-    hora_base = timezone.now()
+    hora_base = op.fecha_planificada + timedelta(days=1)
     ots_creadas = []
     ops_cerradas = set()
 
@@ -266,7 +266,7 @@ def replanificar_produccion(fecha_objetivo=None):
 
     # ✅ 2) Buscar todas las OP que deberían producirse ese día
     ops = OrdenProduccion.objects.filter(
-        fecha_inicio__date=fecha_objetivo,
+        fecha_planificada=fecha_objetivo,
         id_estado_orden_produccion__descripcion="Planificada"  # ya estaban planificadas
     )
 

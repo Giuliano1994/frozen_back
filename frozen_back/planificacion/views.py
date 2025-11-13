@@ -5,12 +5,17 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from compras.models import OrdenCompra
+from ventas.models import OrdenVenta
 from produccion.models import OrdenProduccion
 from planificacion.planner_service import ejecutar_planificador, replanificar_produccion
 from planificacion.planificador import ejecutar_planificacion_diaria_mrp
 import traceback
 from datetime import timedelta, date, datetime
 from django.utils import timezone
+from produccion.models import OrdenProduccion
+from compras.models import OrdenCompra
+from ventas.models import OrdenVenta # Necesitas importar este modelo
+from django.db import models
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -130,35 +135,28 @@ def ejecutar_planificador_view(request):
     
 class CalendarioPlanificacionView(APIView):
     """
-    API para obtener un feed de eventos de planificación (OPs y OCs) para un calendario.
+    API para obtener un feed de eventos de planificación (OPs, OCs y OVs) para un calendario.
     Filtra eventos por fecha de inicio/entrega.
     """
     def get(self, request):
-        # 1. Obtener rango de fechas (aunque no se use en el filtro de la DB, es buena práctica)
-        # Aquí puedes agregar lógica para parsear fechas si tu calendario las envía
-        # Ejemplo: /api/calendario/?start_date=2025-10-01&end_date=2025-12-31
         
         eventos = []
 
         # --- A. EVENTOS DE PRODUCCIÓN (OrdenProduccion - OPs) ---
         
-        # Filtramos todas las OPs que no están finalizadas ni canceladas
         ops_pendientes = OrdenProduccion.objects.filter(
-            id_estado_orden_produccion__descripcion__in=['En espera', 'Pendiente de inicio', 'En proceso']
+            id_estado_orden_produccion__descripcion__in=['En espera', 'Pendiente de inicio', 'En proceso', 'Planificada']
         ).select_related('id_producto', 'id_estado_orden_produccion')
         
         for op in ops_pendientes:
-            # Asumimos que la duración de la OP es su tiempo planificado + tiempo total de lead time.
-            # Aquí, solo usamos la fecha_inicio para el start y una estimación simple para el end.
             
-            # Usaremos el campo fecha_inicio (DateTimePicker) y añadiremos 1 día como duración mínima.
             start_dt = op.fecha_inicio
             
-            # NOTA: Para un END preciso, necesitarías el tiempo de producción total,
-            # pero para el calendario, estimamos el final del día de inicio o el día siguiente.
-            end_dt = start_dt + timedelta(hours=8) # Estimamos 8 horas de duración para la visualización
-
-            fecha_planificada = op.fecha_planificada
+            # Estimamos 8 horas de duración para la visualización
+            end_dt = start_dt + timedelta(hours=8) 
+            
+            # Usamos fecha_planificada (que probablemente sea la fecha de fin o entrega ajustada)
+            fecha_planificada_op = op.fecha_planificada if op.fecha_planificada else None
 
             eventos.append({
                 "id": f"OP-{op.id_orden_produccion}",
@@ -168,40 +166,72 @@ class CalendarioPlanificacionView(APIView):
                 "type": "Produccion",
                 "status": op.id_estado_orden_produccion.descripcion,
                 "quantity": op.cantidad,
-                "fecha_planificada": fecha_planificada
+                "fecha_planificada": fecha_planificada_op.isoformat() if fecha_planificada_op else None,
+                "color": "#FFC107" # Amarillo para producción
             })
 
         # --- B. EVENTOS DE COMPRA (OrdenCompra - OCs) ---
         
-        # Filtramos las OCs que están "En proceso" (stock en camino)
         ocs_pendientes = OrdenCompra.objects.filter(
             id_estado_orden_compra__descripcion='En proceso',
             fecha_entrega_estimada__isnull=False # Debe tener una fecha estimada para mostrar
         ).select_related('id_proveedor', 'id_estado_orden_compra')
         
         for oc in ocs_pendientes:
-            # La fecha de inicio es la fecha estimada de recepción (fecha_entrega_estimada)
+            
             delivery_date = oc.fecha_entrega_estimada
             
-            # 🚨 LÍNEA CORREGIDA: Usar el nombre por defecto de Django si no hay related_name
+            # Asumimos que la entrega ocurre a la hora de inicio laboral
+            start_dt = timezone.make_aware(delivery_date) if isinstance(delivery_date, (timezone.datetime, datetime)) else timezone.make_aware(datetime.combine(delivery_date, datetime.min.time()))
+            
             try:
-                # Intenta usar el related_name por defecto (nombre del modelo en minúsculas + _set)
                 items_count = oc.ordencompramateriaprima_set.count() 
             except AttributeError:
-                # Si el related_name es 'ordencompra_materias_primas' y ese es el error,
-                # significa que la relación no existe o la app no se migró correctamente.
-                # Para evitar fallar, asignamos 0.
                 items_count = 0
                 
             
             eventos.append({
                 "id": f"OC-{oc.id_orden_compra}",
-                "title": f"OC-{oc.id_orden_compra}: Recepción MP ({items_count} ítems)",
-                "start": delivery_date.isoformat(),
-                "end": (delivery_date + timedelta(hours=2)).isoformat(), # Asumimos 2h de recepción
+                "title": f"OC-{oc.id_orden_compra}: Recepción MP ({oc.id_proveedor.nombre}, {items_count} ítems)",
+                "start": start_dt.isoformat(),
+                "end": (start_dt + timedelta(hours=2)).isoformat(), # Asumimos 2h de recepción
                 "type": "Compra (Recepción)",
                 "status": oc.id_estado_orden_compra.descripcion,
-                "proveedor": oc.id_proveedor.nombre
+                "proveedor": oc.id_proveedor.nombre,
+                "color": "#17A2B8" # Azul claro para compras
             })
+            
+        # --- C. EVENTOS DE VENTA (OrdenVenta - OVs - Fechas de Entrega) ---
+        
+        # Filtramos las OVs que no están finalizadas y tienen una fecha de entrega
+        ovs_pendientes = OrdenVenta.objects.filter(
+            id_estado_venta__descripcion__in=['Creada', 'En Preparación', 'Pendiente de Pago', 'Pendiente de Entrega'],
+            fecha_entrega__isnull=False # Usamos la fecha límite del cliente
+        ).select_related('id_cliente', 'id_estado_venta')
 
+        for ov in ovs_pendientes:
+            # Usamos la fecha_entrega (límite del cliente) como el punto de inicio del evento
+            start_dt = ov.fecha_entrega 
+            
+            # Usamos la fecha_entrega_planificada (fecha ajustada por MRP) para el título/detalle
+            fecha_planificada_ov = ov.fecha_entrega_planificada if ov.fecha_entrega_planificada else None
+
+            # Buscamos la cantidad total de productos
+            total_productos = ov.ordenventaproducto_set.aggregate(total=models.Sum('cantidad'))['total'] or 0
+            
+            eventos.append({
+                "id": f"OV-{ov.id_orden_venta}",
+                "title": f"OV-{ov.id_orden_venta}: Entrega {ov.id_cliente.nombre} ({total_productos} u.)",
+                # El evento empieza en la fecha límite de entrega
+                "start": start_dt.isoformat(),
+                # El evento dura 1 hora para visualización simple
+                "end": (start_dt + timedelta(hours=1)).isoformat(), 
+                "type": "Venta (Fecha Estimada)",
+                "status": ov.id_estado_venta.descripcion,
+                "cliente": ov.id_cliente.nombre,
+                "cantidad_total": total_productos,
+                "fecha_planificada_mrp": fecha_planificada_ov.isoformat() if fecha_planificada_ov else "N/A",
+                "color": "#28A745" # Verde para ventas/entregas
+            })
+            
         return Response(eventos, status=status.HTTP_200_OK)

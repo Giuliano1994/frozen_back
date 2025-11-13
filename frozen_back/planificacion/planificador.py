@@ -366,7 +366,8 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                         id_producto=producto,
                         id_estado_orden_produccion=estado_op_en_espera,
                         fecha_inicio=fecha_inicio_dt,
-                        cantidad=cantidad_a_producir_total
+                        cantidad=cantidad_a_producir_total,
+                        fecha_planificada = fecha_planificada_op   
                     )
                     created = True
                     print(f"    -> CREADA OP {op.id_orden_produccion} para {cantidad_a_producir_total} de {producto.nombre} (Inicio: {fecha_inicio_op})")
