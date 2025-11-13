@@ -205,7 +205,7 @@ def ejecutar_planificador(fecha_simulada: date):
     estado_ot = EstadoOrdenTrabajo.objects.get(descripcion="Pendiente")
     estado_op = EstadoOrdenProduccion.objects.get(descripcion="Planificada")
 
-    hora_base = op.fecha_planificada + timedelta(days=1)
+    hora_base = op.fecha_planificada 
     ots_creadas = []
     ops_cerradas = set()
 
