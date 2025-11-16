@@ -35,6 +35,7 @@ class OrdenProduccion(models.Model):
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_inicio = models.DateTimeField(blank=True, null=True)
     fecha_planificada = models.DateTimeField(blank=True, null=True)
+    fecha_fin_planificada = models.DateField(null=True, blank=True)
     cantidad = models.IntegerField()
 
     id_estado_orden_produccion = models.ForeignKey(
@@ -242,3 +243,17 @@ class OrdenVentaProduccion(models.Model):
 
     def __str__(self):
         return f"OV-{self.id_orden_venta_id} ↔ OP-{self.id_orden_produccion_id}"
+    
+class CalendarioProduccion(models.Model):
+    """
+    Es una "reserva blanda" (placeholder) creada por el MRP (Fase 1).
+    Representa las horas reservadas para una OP en un día y línea.
+    """
+    id_orden_produccion = models.ForeignKey(OrdenProduccion, on_delete=models.CASCADE, related_name="reservas_calendario")
+    id_linea_produccion = models.ForeignKey(LineaProduccion, on_delete=models.CASCADE, related_name="reservas_calendario")
+    fecha = models.DateField(db_index=True)
+    horas_reservadas = models.DecimalField(max_digits=5, decimal_places=2)
+    cantidad_a_producir = models.IntegerField(default=0)
+
+    class Meta:
+        unique_together = ('id_linea_produccion', 'fecha', 'id_orden_produccion')
