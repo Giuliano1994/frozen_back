@@ -3,7 +3,7 @@ from simple_history.models import HistoricalRecords
 from productos.models import Producto
 from empleados.models import Empleado
 from stock.models import LoteProduccion
-from ventas.models import OrdenVenta
+from ventas.models import OrdenVenta, OrdenVentaProducto
 
 class EstadoOrdenProduccion(models.Model):
     id_estado_orden_produccion = models.AutoField(primary_key=True)
@@ -257,3 +257,23 @@ class CalendarioProduccion(models.Model):
 
     class Meta:
         unique_together = ('id_linea_produccion', 'fecha', 'id_orden_produccion')
+
+class OrdenProduccionPegging(models.Model):
+    """
+    Esta es la tabla 'Muchos-a-Muchos' (M-M) que vincula
+    qué OPs satisfacen qué líneas de OV.
+    """
+    id_orden_produccion = models.ForeignKey(
+        OrdenProduccion, 
+        on_delete=models.CASCADE, 
+        related_name="ovs_vinculadas"
+    )
+    id_orden_venta_producto = models.ForeignKey(
+        OrdenVentaProducto, 
+        on_delete=models.CASCADE, 
+        related_name="ops_vinculadas"
+    )
+    cantidad_asignada = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        unique_together = ('id_orden_produccion', 'id_orden_venta_producto')

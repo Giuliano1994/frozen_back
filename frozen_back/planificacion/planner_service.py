@@ -2,7 +2,8 @@ import math
 from collections import defaultdict
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import Q
+# ❗️ Importar Count para chequear tareas restantes
+from django.db.models import Q, Sum, Count 
 from datetime import timedelta, date, datetime
 
 from produccion.models import (
@@ -11,68 +12,80 @@ from produccion.models import (
     OrdenDeTrabajo,
     EstadoOrdenProduccion,
     EstadoOrdenTrabajo,
-    CalendarioProduccion  # ❗️ IMPORTAR EL NUEVO MODELO
+    CalendarioProduccion
 )
 
 from recetas.models import ProductoLinea
 from ortools.sat.python import cp_model
 
 
-HORIZONTE_MINUTOS = 16 * 60 # ❗️ AJUSTADO A 16 HORAS (16*60 = 960 minutos)
+HORIZONTE_MINUTOS = 16 * 60
 SOLVER_MAX_SECONDS = 30
 SOLVER_WORKERS = 8
 
 
 def ejecutar_planificador(fecha_simulada: date):
+    """
+    NUEVA LÓGICA (Solver Táctico / Dispatcher):
+    Lee las TAREAS del CalendarioProduccion para "mañana" y
+    las optimiza para generar las OrdenesDeTrabajo (OTs).
+    """
 
-    # ❗️ Usar la fecha simulada para determinar "mañana"
-    dia_de_planificacion = fecha_simulada + timezone.timedelta(days=1)
-    # mañana = timezone.localdate() + timezone.timedelta(days=1) # Versión antigua
-
-    # ✅ 1) Seleccionar solo OP para "mañana" (el día de planificación)
-    # ❗️ AÑADIDO: order_by para priorizar (opcional)
+    dia_de_planificacion = fecha_simulada #+ timezone.timedelta(days=1)
     print(f"Iniciando Solver Táctico para {dia_de_planificacion}...")
-    
-    ordenes = list(
-        OrdenProduccion.objects.filter(
-            id_estado_orden_produccion__descripcion="Pendiente de inicio",
-            fecha_planificada=dia_de_planificacion # <-- Esto ahora es la fecha REAL
-        ).select_related("id_producto").order_by('id_orden_produccion') # o por prioridad
-    )
 
-    # ✅ 2) Seleccionar líneas activas
-    lineas = list(
+    # ===================================================================
+    # ✅ 1) SELECCIONAR TAREAS (CALENDARIO) PARA "MAÑANA"
+    # ===================================================================
+    
+    # --- ❗️ INICIO DE CORRECCIÓN 1 ---
+    # El Solver ahora busca OPs "Pendiente de inicio" (primer día)
+    # O "En proceso" (días siguientes).
+    estados_op_validos = ["Pendiente de inicio", "En proceso", "Finalizada"]
+    
+    tasks_today = list(
+        CalendarioProduccion.objects.filter(
+            fecha=dia_de_planificacion,
+            id_orden_produccion__id_estado_orden_produccion__descripcion__in=estados_op_validos
+        ).select_related(
+            'id_orden_produccion__id_producto',
+            'id_linea_produccion'
+        ).order_by('id_orden_produccion__id_orden_produccion')
+    )
+    # --- ❗️ FIN DE CORRECCIÓN 1 ---
+
+    if not tasks_today:
+        print(f"✅ No hay líneas de calendario ({', '.join(estados_op_validos)}) para planificar en {dia_de_planificacion}.")
+        return
+
+    # ===================================================================
+    # ✅ 2) OBTENER REGLAS Y LÍNEAS (Sin cambios)
+    # ===================================================================
+    lineas_activas = list(
         LineaProduccion.objects.filter(
             Q(id_estado_linea_produccion__descripcion="Disponible") |
             Q(id_estado_linea_produccion__descripcion="Ocupada")
         )
     )
+    lineas_activas_ids = set(l.id_linea_produccion for l in lineas_activas)
 
-    if not ordenes:
-        # ❗️ Ajustado el log para usar la variable correcta
-        print(f"✅ No hay OP 'Pendiente de inicio' para planificar en {dia_de_planificacion}.")
-        return
-
-    if not lineas:
+    if not lineas_activas:
         print("❌ No hay líneas disponibles.")
         return
 
-    # ... (Tu código de Cargar reglas, lookup, etc. no cambia) ...
-    # ✅ 3) Cargar reglas producto ↔ línea
-    productos_ids = [op.id_producto_id for op in ordenes]
-    lineas_ids = [l.id_linea_produccion for l in lineas]
- 
+    productos_ids = list(set(task.id_orden_produccion.id_producto_id for task in tasks_today))
+    lineas_ids = list(set(task.id_linea_produccion_id for task in tasks_today))
+
     reglas = ProductoLinea.objects.filter(
-     id_producto_id__in=productos_ids,
-     id_linea_produccion_id__in=lineas_ids
+        id_producto_id__in=productos_ids,
+        id_linea_produccion_id__in=lineas_ids
     ).values(
         "id_producto_id",
         "id_linea_produccion_id",
         "cant_por_hora",
         "cantidad_minima"
     )
- 
-    # ✅ Diccionario para lookup rápido
+
     capacidad_lookup = {
         (r["id_producto_id"], r["id_linea_produccion_id"]): {
             "cant_por_hora": r["cant_por_hora"],
@@ -80,134 +93,122 @@ def ejecutar_planificador(fecha_simulada: date):
         }
         for r in reglas
     }
- 
+
     if not capacidad_lookup:
         print("❌ No hay reglas Producto ↔ Línea válidas. No se puede planificar.")
         return
- 
-    # ✅ Lista final de líneas realmente aptas
-    lineas_validas = [
-        l for l in lineas
-        if any((op.id_producto_id, l.id_linea_produccion) in capacidad_lookup
-                for op in ordenes)
-    ]
- 
-    if not lineas_validas:
-        print("❌ No hay líneas capaces de producir los productos requeridos.")
-        return
 
-    # ✅ 4) Crear modelo
+    # ===================================================================
+    # ✅ 3) CREAR MODELO (Basado en TAREAS, no en OPs) (Sin cambios)
+    # ===================================================================
     model = cp_model.CpModel()
     intervals_por_linea = defaultdict(list)
     todas_tandas = []
     all_end_vars = []
 
-    print("✅ Generando tandas según ProductoLinea...")
-
-    # ... (Tu código de generación de tandas del Solver no cambia) ...
-    for op in ordenes:
-        total = int(op.cantidad)
+    print("✅ Generando tandas según CalendarioProduccion...")
+    
+    for cal_task in tasks_today:
+        op = cal_task.id_orden_produccion
+        linea = cal_task.id_linea_produccion
         producto_id = op.id_producto_id
- 
-        # ✅ Solo líneas que aceptan este producto
-        lineas_para_producto = [
-            l for l in lineas_validas
-            if (producto_id, l.id_linea_produccion) in capacidad_lookup
-        ]
- 
-        if not lineas_para_producto:
-            print(f"❌ El producto {op.id_producto_id} no puede producirse en ninguna línea.")
+        
+        total_task_qty = int(cal_task.cantidad_a_producir)
+        max_horas_tarea = int(cal_task.horas_reservadas)
+        max_minutos_tarea = max_horas_tarea * 60
+
+        # --- Validaciones ---
+        if linea.id_linea_produccion not in lineas_activas_ids:
+            print(f"❌ Línea {linea.id_linea_produccion} no está disponible. Omitiendo tarea de OP {op.id_orden_produccion}.")
             continue
- 
-        for linea in lineas_para_producto:
- 
-            regla = capacidad_lookup[(producto_id, linea.id_linea_produccion)]
-            tamano_tanda = regla["cant_por_hora"]
-            minimo = regla["cantidad_minima"] or 0
- 
-            duracion_tanda = 60  # cada tanda dura 1 hora
+
+        if (producto_id, linea.id_linea_produccion) not in capacidad_lookup:
+            print(f"❌ No hay regla para OP {op.id_orden_produccion} en Línea {linea.id_linea_produccion}. Omitiendo.")
+            continue
             
-            if tamano_tanda <= 0:
-                print(f"⚠️ TAMAÑO TANDA 0: OP {op.id_orden_produccion} en línea {linea.id_linea_produccion}")
-                continue
- 
-            max_tandas = math.ceil(total / tamano_tanda)
- 
-            for t in range(max_tandas):
- 
-                # Última tanda → puede ser parcial
-                if t == max_tandas - 1:
-                    sobra = total - (tamano_tanda * (max_tandas - 1))
- 
-                    # ❗ Si la tanda final es menor al mínimo, NO se produce
-                    if sobra < minimo:
-                        print(
-                            f"⚠️ Tanda final de OP {op.id_orden_produccion} en línea {linea.id_linea_produccion} "
-                            f"({sobra} unidades) menor al mínimo permitido ({minimo}). No se generará."
-                        )
-                        continue
- 
-                    tamano_real = sobra
-                else:
-                    tamano_real = tamano_tanda
- 
-                duracion_real = math.ceil(60 * (tamano_real / tamano_tanda))
-                
-                # ❗️ Control para evitar duraciones 0
-                if duracion_real <= 0:
-                    print(f"⚠️ DURACION 0: OP {op.id_orden_produccion} Tanda {t} / {tamano_real}u")
+        regla = capacidad_lookup[(producto_id, linea.id_linea_produccion)]
+        tamano_tanda = regla["cant_por_hora"]
+        minimo = regla["cantidad_minima"] or 0
+        
+        if tamano_tanda <= 0:
+            print(f"⚠️ TAMAÑO TANDA 0: OP {op.id_orden_produccion} en línea {linea.id_linea_produccion}")
+            continue
+        
+        max_tandas = math.ceil(total_task_qty / tamano_tanda)
+        
+        if max_tandas == 0:
+            continue
+
+        task_tandas = [] 
+
+        for t in range(max_tandas):
+            if t == max_tandas - 1:
+                sobra = total_task_qty - (tamano_tanda * (max_tandas - 1))
+                if sobra < minimo:
+                    print(f"⚠️ Tanda final de Tarea {cal_task.id} (OP {op.id}) en línea {linea.id_linea_produccion} ({sobra}u) < mínimo ({minimo}). No se generará.")
                     continue
- 
-                # Crear variables del solver
-                lit = model.NewBoolVar(
-                    f"op{op.id_orden_produccion}_l{linea.id_linea_produccion}_t{t}"
-                )
-                start = model.NewIntVar(0, HORIZONTE_MINUTOS, "")
-                end = model.NewIntVar(0, HORIZONTE_MINUTOS, "")
-                interval = model.NewOptionalIntervalVar(start, duracion_real, end, lit, "")
- 
-                todas_tandas.append({
-                    "literal": lit,
-                    "op": op,
-                    "linea": linea,
-                    "tamano": tamano_real,
-                    "start": start,
-                    "end": end
-                })
- 
-                intervals_por_linea[linea.id_linea_produccion].append(interval)
-                all_end_vars.append(end)
+                tamano_real = sobra
+            else:
+                tamano_real = tamano_tanda
+            
+            duracion_real = math.ceil(60 * (tamano_real / tamano_tanda))
+            if duracion_real <= 0:
+                continue
                 
-        # ✅ Cobertura sin obligar a producir cantidades menores al mínimo
+            lit = model.NewBoolVar(
+                f"cal{cal_task.id}_t{t}"
+            )
+            start = model.NewIntVar(0, HORIZONTE_MINUTOS, "")
+            end = model.NewIntVar(0, HORIZONTE_MINUTOS, "")
+            interval = model.NewOptionalIntervalVar(start, duracion_real, end, lit, "")
+            
+            tanda_info = {
+                "literal": lit,
+                "op": op,
+                "linea": linea,
+                "tamano": tamano_real,
+                "start": start,
+                "end": end,
+                "duracion": duracion_real,
+                "cal_task_id": cal_task.id
+            }
+            
+            todas_tandas.append(tanda_info)
+            task_tandas.append(tanda_info)
+            intervals_por_linea[linea.id_linea_produccion].append(interval)
+            all_end_vars.append(end)
+
         model.Add(
             sum(
                 tanda["literal"] * tanda["tamano"]
-                for tanda in todas_tandas
-                if tanda["op"] == op
-            ) <= total
+                for tanda in task_tandas
+            ) == total_task_qty
         )
- 
-    # ✅ NoOverlap por línea
+        
+        model.Add(
+            sum(
+                tanda["literal"] * tanda["duracion"]
+                for tanda in task_tandas
+            ) <= max_minutos_tarea
+        )
+
+    # ... (Resto del setup del modelo: NoOverlap, Makespan, Maximize) ...
     for linea_id, intervals in intervals_por_linea.items():
         model.AddNoOverlap(intervals)
- 
-    # ✅ Minimizar makespan
     makespan = model.NewIntVar(0, HORIZONTE_MINUTOS, "makespan")
     model.AddMaxEquality(makespan, all_end_vars)
- 
-    # Variable que representa la producción total planificada
-    produccion_total = model.NewIntVar(0, sum(op.cantidad for op in ordenes), "produccion_total")
- 
+    produccion_total = model.NewIntVar(0, sum(t.cantidad_a_producir for t in tasks_today), "produccion_total")
     model.Add(
         produccion_total == sum(
             tanda["literal"] * tanda["tamano"]
             for tanda in todas_tandas
         )
     )
- 
     model.Maximize(produccion_total)
-
-    # ✅ Ejecutar solver
+    
+    # ===================================================================
+    # ✅ 4) EJECUTAR SOLVER Y GUARDAR
+    # ===================================================================
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = SOLVER_MAX_SECONDS
     solver.parameters.num_search_workers = SOLVER_WORKERS
@@ -216,37 +217,34 @@ def ejecutar_planificador(fecha_simulada: date):
 
     if status not in (cp_model.FEASIBLE, cp_model.OPTIMAL):
         print(f"❌ No se pudo generar una planificación para {dia_de_planificacion}.")
-        # ❗️ Devolvemos TODAS las OPs de hoy a "En espera" para que se replanifiquen
+        
         estado_en_espera = EstadoOrdenProduccion.objects.get(descripcion="En espera")
-        op_ids = [op.id_orden_produccion for op in ordenes]
+        op_ids = set(t.id_orden_produccion_id for t in tasks_today)
         OrdenProduccion.objects.filter(id_orden_produccion__in=op_ids).update(id_estado_orden_produccion=estado_en_espera)
         
-        # ❗️ Y limpiamos sus reservas de calendario para que el MRP pueda reasignar
         CalendarioProduccion.objects.filter(
             id_orden_produccion_id__in=op_ids,
-            fecha=dia_de_planificacion
+            fecha=dia_de_planificacion # Borra solo las de hoy, para que MRP las reprograme
         ).delete()
-        print(f"Ops {op_ids} devueltas a 'En espera'. Reservas de calendario limpiadas.")
+        print(f"Ops {list(op_ids)} devueltas a 'En espera'. Reservas de calendario de HOY limpiadas.")
         return
 
     # ✅ Guardar resultados
     estado_ot = EstadoOrdenTrabajo.objects.get(descripcion="Pendiente")
     estado_op_planificada = EstadoOrdenProduccion.objects.get(descripcion="Planificada")
-    estado_op_en_espera = EstadoOrdenProduccion.objects.get(descripcion="En espera") # Para OPs fallidas
+    estado_op_en_espera = EstadoOrdenProduccion.objects.get(descripcion="En espera")
+    estado_op_en_proceso = EstadoOrdenProduccion.objects.get(descripcion="En proceso")
 
-    # ❗️ Usar el 'dia_de_planificacion' como base (ya es un objeto date)
-    # ❗️ Necesitamos convertirlo a datetime para sumar minutos
     hora_base_dt = timezone.make_aware(datetime.combine(dia_de_planificacion, datetime.min.time()))
 
     ots_creadas = []
     ops_planificadas_exitosamente = set() # ID de OPs con OTs creadas
+    cal_tasks_exitosas_ids = set() # ID de Tareas del Calendario completadas
 
     for tanda in todas_tandas:
         if solver.Value(tanda["literal"]):
-
             ini = solver.Value(tanda["start"])
             fin = solver.Value(tanda["end"])
-
             ots_creadas.append(
                 OrdenDeTrabajo(
                     id_orden_produccion=tanda["op"],
@@ -258,115 +256,130 @@ def ejecutar_planificador(fecha_simulada: date):
                 )
             )
             ops_planificadas_exitosamente.add(tanda["op"].id_orden_produccion)
+            cal_tasks_exitosas_ids.add(tanda["cal_task_id"])
 
-    # --- ❗️ LÓGICA DE ACTUALIZACIÓN Y LIMPIEZA ---
+    # --- ❗️ INICIO DE CORRECCIÓN 2 ---
+    # Lógica de actualización de estado
     
-    # 1. Identificar OPs originales vs. OPs fallidas
-    ops_originales_ids = set(op.id_orden_produccion for op in ordenes)
+    ops_originales_ids = set(task.id_orden_produccion_id for task in tasks_today)
     ops_fallidas_ids = ops_originales_ids - ops_planificadas_exitosamente
+    cal_tasks_originales_ids = set(task.id for task in tasks_today)
+    cal_tasks_fallidas_ids = cal_tasks_originales_ids - cal_tasks_exitosas_ids
+
 
     with transaction.atomic():
-        # 2. Crear las OTs (Reservas "Duras")
+        # 1. Crear las OTs
         OrdenDeTrabajo.objects.bulk_create(ots_creadas)
         print(f"✅ {len(ots_creadas)} OTs creadas exitosamente para {dia_de_planificacion}.")
 
-        # 3. Limpiar "Reservas Blandas" (Calendario) SÓLO para OPs exitosas
-        if ops_planificadas_exitosamente:
+        # 2. Limpiar TAREAS de Calendario exitosas
+        if cal_tasks_exitosas_ids:
             reservas_blandas_borradas = CalendarioProduccion.objects.filter(
-                id_orden_produccion_id__in=ops_planificadas_exitosamente,
-                fecha=dia_de_planificacion
+                id__in=cal_tasks_exitosas_ids
             ).delete()
-            print(f"🧹 Limpiadas {reservas_blandas_borradas[0]} reservas de calendario para OPs exitosas.")
+            print(f"🧹 Limpiadas {reservas_blandas_borradas[0]} reservas de calendario EXITOSAS.")
         
-            # 4. Actualizar estado de OPs exitosas
-            OrdenProduccion.objects.filter(
-                id_orden_produccion__in=ops_planificadas_exitosamente
-            ).update(
-                id_estado_orden_produccion=estado_op_planificada
-            )
-            print(f"✅ {len(ops_planificadas_exitosamente)} OPs marcadas como 'Planificada'.")
+        # 3. Actualizar estado de OPs exitosas
+        if ops_planificadas_exitosamente:
+            
+            # ❗️ Primero, movemos todas las OPs "Pendiente de inicio" a "En proceso"
+            ops_actualizadas_a_proceso = OrdenProduccion.objects.filter(
+                id_orden_produccion__in=ops_planificadas_exitosamente,
+                id_estado_orden_produccion__descripcion="Pendiente de inicio" 
+            ).update(id_estado_orden_produccion=estado_op_en_proceso)
+            
+            if ops_actualizadas_a_proceso > 0:
+                print(f"✅ {ops_actualizadas_a_proceso} OPs movidas de 'Pendiente de inicio' a 'En proceso'.")
 
-        # 5. Gestionar OPs que NO se pudieron planificar hoy
-        if ops_fallidas_ids:
-            print(f"⚠️ {len(ops_fallidas_ids)} OPs no pudieron ser planificadas hoy por el solver.")
-            # Las devolvemos a "En espera" para que el MRP (Fase 1) las reprograme
+            # ❗️ Segundo, buscamos OPs que (después de borrar) ya no tengan tareas futuras
+            ops_para_chequear_finalizacion = ops_planificadas_exitosamente
+            
+            ops_sin_tareas_futuras = OrdenProduccion.objects.filter(
+                id_orden_produccion__in=ops_para_chequear_finalizacion
+            ).annotate(
+                # Contamos cuántas reservas de calendario le quedan (en cualquier fecha)
+                tareas_calendario_restantes=Count('reservas_calendario') 
+            ).filter(
+                tareas_calendario_restantes=0 # Si le quedan 0
+            )
+
+            if ops_sin_tareas_futuras.exists():
+                ids_ops_finalizadas = list(ops_sin_tareas_futuras.values_list('id_orden_produccion', flat=True))
+                print(f"🎉 OPs {ids_ops_finalizadas} han completado su última tarea de calendario.")
+                
+                # Las movemos a "Planificada" (listas para cierre por el supervisor)
+                ops_sin_tareas_futuras.update(id_estado_orden_produccion=estado_op_planificada)
+
+        # 4. Gestionar Tareas y OPs que FALLARON hoy
+        if cal_tasks_fallidas_ids:
+            print(f"⚠️ {len(cal_tasks_fallidas_ids)} TAREAS de Calendario no pudieron ser planificadas hoy por el solver.")
+            
+            # Devolvemos las OPs fallidas a "En espera" para que el MRP las reprograme
             OrdenProduccion.objects.filter(
                 id_orden_produccion__in=ops_fallidas_ids
             ).update(
                 id_estado_orden_produccion=estado_op_en_espera
             )
             
-            # Limpiamos su reserva de calendario de HOY,
-            # para que el MRP (Fase 1) no piense que están ocupadas
+            # Borramos TODAS las reservas de calendario de las OPs fallidas
+            # (para que el MRP pueda replanificar desde cero)
             reservas_fallidas_borradas = CalendarioProduccion.objects.filter(
                 id_orden_produccion_id__in=ops_fallidas_ids,
-                fecha=dia_de_planificacion
             ).delete()
-            print(f"Devueltas {len(ops_fallidas_ids)} OPs a 'En espera'. Limpiadas {reservas_fallidas_borradas[0]} reservas de calendario fallidas.")
+            print(f"Devueltas {len(ops_fallidas_ids)} OPs a 'En espera'. Limpiadas {reservas_fallidas_borradas[0]} reservas de calendario (TODAS) de esas OPs.")
+    # --- ❗️ FIN DE CORRECCIÓN 2 ---
 
 
 def replanificar_produccion(fecha_objetivo=None):
     """
     Replanifica las órdenes de producción para una fecha determinada.
-    Si una línea se rompe o deja de estar disponible, redistribuye las OTs.
+    MODIFICADO: Ahora solo limpia y devuelve a "En espera" para que el MRP
+    se encargue de la reprogramación completa.
     """
-
-    # ✅ 1) Calcular fecha objetivo (mañana por defecto)
     if fecha_objetivo is None:
-        # ❗️ USAREMOS EL MISMO DÍA DE PLANIFICACIÓN QUE EL SOLVER
         fecha_objetivo = timezone.localdate() + timezone.timedelta(days=1)
-        # fecha_objetivo = timezone.localdate() + timezone.timedelta(days=1) # Versión antigua
 
     print(f"🔄 Replanificando producción para: {fecha_objetivo}")
 
-    # ✅ 2) Buscar todas las OP que deberían producirse ese día
-    ops = OrdenProduccion.objects.filter(
-        fecha_planificada=fecha_objetivo,
-        id_estado_orden_produccion__descripcion="Planificada"  # ya estaban planificadas
-    )
+    # 1. Buscar OPs que tenían OTs o Calendario en esa fecha
+    op_ids_calendario = set(CalendarioProduccion.objects.filter(
+        fecha=fecha_objetivo
+    ).values_list('id_orden_produccion_id', flat=True))
+    
+    op_ids_ots = set(OrdenDeTrabajo.objects.filter(
+        hora_inicio_programada__date=fecha_objetivo
+    ).values_list('id_orden_produccion_id', flat=True))
+    
+    op_ids_a_replanificar = op_ids_calendario.union(op_ids_ots)
 
-    if not ops.exists():
-        print("✅ No hay órdenes planificadas para replanificar.")
+    if not op_ids_a_replanificar:
+        print("✅ No hay órdenes para replanificar en esa fecha.")
         return
-    
-    op_ids = list(ops.values_list('id_orden_produccion', flat=True))
-    
-    # ✅ 3) Buscar OTs asociadas a esas OP en estados replanificables
+
+    print(f"Se replanificarán {len(op_ids_a_replanificar)} OPs: {list(op_ids_a_replanificar)}")
+
+    # 2. BORRAR OTs futuras no iniciadas
     estados_replanificables = EstadoOrdenTrabajo.objects.filter(
         descripcion__in=["Pendiente", "Planificada"]
     )
-
-    ots = OrdenDeTrabajo.objects.filter(
-        id_orden_produccion__in=ops,
-        id_estado_orden_trabajo__in=estados_replanificables
-    )
-
-    # ✅ 4) BORRAR OTs que aún no comenzaron
-    cantidad_eliminadas = ots.count()
-    ots.delete()
-
-    print(f"🗑️ Eliminadas {cantidad_eliminadas} OTs no iniciadas.")
-    
-    # --- ❗️ LÓGICA AÑADIDA ---
-    # 5. BORRAR también las "reservas blandas" (Calendario)
-    #    para este día, ya que las vamos a replanificar.
-    reservas_blandas_borradas = CalendarioProduccion.objects.filter(
-        id_orden_produccion_id__in=op_ids,
-        fecha=fecha_objetivo
+    ots_borradas = OrdenDeTrabajo.objects.filter(
+        id_orden_produccion_id__in=op_ids_a_replanificar,
+        id_estado_orden_trabajo__in=estados_replanificables,
+        hora_inicio_programada__gte=timezone.now() # Solo futuras
     ).delete()
-    print(f"🗑️ Eliminadas {reservas_blandas_borradas[0]} reservas de calendario para replanificación.")
-    # --- FIN LÓGICA AÑADIDA ---
+    print(f"🗑️ Eliminadas {ots_borradas[0]} OTs no iniciadas.")
 
-    # ✅ 6) Devolver OP a estado Pendiente de inicio
-    estado_pendiente = EstadoOrdenProduccion.objects.get(descripcion="Pendiente de inicio")
+    # 3. BORRAR TODAS las reservas de Calendario de esas OPs
+    cal_borradas = CalendarioProduccion.objects.filter(
+        id_orden_produccion_id__in=op_ids_a_replanificar
+    ).delete()
+    print(f"🗑️ Eliminadas {cal_borradas[0]} reservas de calendario (TODAS) de esas OPs.")
 
-    ops.update(id_estado_orden_produccion=estado_pendiente)
+    # 4. Devolver OPs a estado "En espera"
+    estado_pendiente = EstadoOrdenProduccion.objects.get(descripcion="En espera")
+    ops_actualizadas = OrdenProduccion.objects.filter(
+        id_orden_produccion__in=op_ids_a_replanificar
+    ).update(id_estado_orden_produccion=estado_pendiente)
 
-    print("🔁 OPs marcadas como Pendiente de inicio nuevamente.")
-
-    # ✅ 7) Ejecutar el planificador normal
-    # ❗️ Usar la fecha del DÍA ANTERIOR para que planifique 'fecha_objetivo'
-    fecha_ejecucion_solver = fecha_objetivo - timedelta(days=1)
-    ejecutar_planificador(fecha_ejecucion_solver)
-
-    print("✅ Replanificación completada.")
+    print(f"🔁 {ops_actualizadas} OPs marcadas como 'En espera' para que el MRP las reprograme.")
+    print("✅ Replanificación (limpieza) completada. El próximo MRP se encargará.")
