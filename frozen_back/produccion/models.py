@@ -37,7 +37,11 @@ class OrdenProduccion(models.Model):
     fecha_planificada = models.DateTimeField(blank=True, null=True)
     fecha_fin_planificada = models.DateField(null=True, blank=True)
     cantidad = models.IntegerField()
-
+    es_generada_automaticamente = models.BooleanField(
+        default=False, 
+        help_text="True si fue creada por el MRP. False si fue creada manualmente.",
+        null=True
+    )
     id_estado_orden_produccion = models.ForeignKey(
         EstadoOrdenProduccion, on_delete=models.CASCADE, db_column="id_estado_orden_produccion"
     )

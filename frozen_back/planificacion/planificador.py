@@ -139,7 +139,55 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
         "items": defaultdict(int) 
     })
     
-    
+    # ===================================================================
+    # 🆕 PASO 0: CIERRE DE OVs PARA MAÑANA
+    # (Reservar Stock PT y cambiar estado a 'Pendiente de Pago')
+    # ===================================================================
+    print(f"\n[PASO 0] Verificando entregas para mañana ({tomorrow}) para paso a 'Pendiente de Pago'...")
+
+    # 1. Buscar OVs en 'En Preparación' que se entreguen mañana
+    ovs_cierre = OrdenVenta.objects.filter(
+        id_estado_venta=estado_ov_en_preparacion,
+        fecha_entrega__date=tomorrow
+    )
+
+    for ov in ovs_cierre:
+        print(f"   > Procesando cierre de OV {ov.id_orden_venta}...")
+        todas_lineas_listas = True
+        
+        lineas = OrdenVentaProducto.objects.filter(id_orden_venta=ov)
+        
+        for linea in lineas:
+            # A. Calcular cuánto falta reservar para esta línea
+            reservas_actuales = ReservaStock.objects.filter(
+                id_orden_venta_producto=linea,
+                id_estado_reserva=estado_reserva_activa
+            ).aggregate(total=Sum('cantidad_reservada'))['total'] or 0
+            
+            cantidad_pendiente_reserva = linea.cantidad - reservas_actuales
+            
+            if cantidad_pendiente_reserva <= 0:
+                continue # Ya está todo reservado
+            
+            # B. Verificar stock físico disponible (Lotes PT)
+            stock_fisico_disponible = get_stock_disponible_para_producto(linea.id_producto.id_producto)
+            
+            if stock_fisico_disponible >= cantidad_pendiente_reserva:
+                # C. Reservar lo que falta
+                _reservar_stock_pt(linea, cantidad_pendiente_reserva, estado_reserva_activa)
+            else:
+                print(f"     ⚠️ ALERTA: Stock insuficiente para OV {ov.id_orden_venta}, Prod: {linea.id_producto.nombre}. (Faltan {cantidad_pendiente_reserva})")
+                todas_lineas_listas = False
+                break # Cortamos el proceso de esta OV, no se puede pasar de estado
+        
+        # D. Si todas las líneas tienen su reserva completa, cambiamos estado
+        if todas_lineas_listas:
+            ov.id_estado_venta = estado_ov_pendiente_pago
+            ov.save(update_fields=['id_estado_venta'])
+            print(f"     ✅ OV {ov.id_orden_venta} actualizada a 'Pendiente de Pago'. Stock reservado.")
+        else:
+            print(f"     ❌ OV {ov.id_orden_venta} no pudo cambiar de estado (falta stock).")
+
     # ===================================================================
     # PASO 1-3: JIT Y LÍNEAS PENDIENTES
     # ===================================================================
@@ -194,6 +242,41 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
     # ===================================================================
     # ❗️ PASO 4: CANCELACIÓN DE OPs HUÉRFANAS
     # ===================================================================
+    """
+    print(f"\n[PASO 4/6] Verificando OPs 'En espera' huérfanas (OVs canceladas)...")
+
+    ov_activas_ids = set(OrdenVenta.objects.filter(
+        id_estado_venta__in=estados_ov_activos
+    ).values_list('id_orden_venta', flat=True))
+
+    ops_en_espera = OrdenProduccion.objects.filter(
+        id_estado_orden_produccion=estado_op_en_espera
+    ).prefetch_related('ovs_vinculadas__id_orden_venta_producto__id_orden_venta') 
+
+    ops_a_cancelar = []
+
+  
+        for op in ops_en_espera:
+            ovs_vinculadas_activas = False
+            for peg in op.ovs_vinculadas.all():
+                if peg.id_orden_venta_producto.id_orden_venta_id in ov_activas_ids:
+                    ovs_vinculadas_activas = True
+                    break 
+            
+            if not ovs_vinculadas_activas:
+                ops_a_cancelar.append(op.id_orden_produccion)
+                print(f"   > OP {op.id_orden_produccion} está huérfana (OV cancelada/entregada). Marcando para cancelar.")
+
+
+             # --- De aquí para abajo es solo para las AUTOMÁTICAS ---
+        
+            ovs_vinculadas_activas = False
+            for peg in op.ovs_vinculadas.all():
+                if peg.id_orden_venta_producto.id_orden_venta_id in ov_activas_ids:
+                    ovs_vinculadas_activas = True
+                    break
+    """
+
     print(f"\n[PASO 4/6] Verificando OPs 'En espera' huérfanas (OVs canceladas)...")
 
     ov_activas_ids = set(OrdenVenta.objects.filter(
@@ -207,6 +290,15 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
     ops_a_cancelar = []
 
     for op in ops_en_espera:
+        
+        # ✅ NUEVA LÓGICA CON LA VARIABLE
+        # Si es manual (False), la ignoramos completamente. No se toca.
+        if not op.es_generada_automaticamente:
+            print(f"   > OP {op.id_orden_produccion} es MANUAL. Se conserva.")
+            continue 
+
+        # --- De aquí para abajo es solo para las AUTOMÁTICAS ---
+        
         ovs_vinculadas_activas = False
         for peg in op.ovs_vinculadas.all():
             if peg.id_orden_venta_producto.id_orden_venta_id in ov_activas_ids:
@@ -215,7 +307,7 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
         
         if not ovs_vinculadas_activas:
             ops_a_cancelar.append(op.id_orden_produccion)
-            print(f"   > OP {op.id_orden_produccion} está huérfana (OV cancelada/entregada). Marcando para cancelar.")
+            print(f"   > OP {op.id_orden_produccion} (Auto) es HUÉRFANA. Marcando para cancelar.")
 
     if ops_a_cancelar:
         ops_canceladas = OrdenProduccion.objects.filter(id_orden_produccion__in=ops_a_cancelar)
@@ -278,7 +370,8 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
             op = OrdenProduccion(
                 id_producto=producto,
                 id_estado_orden_produccion=estado_op_en_espera,
-                cantidad=cantidad_a_producir
+                cantidad=cantidad_a_producir,
+                es_generada_automaticamente=True
             )
             # ❗️ NOTA: No la guardamos hasta tener la fecha real
 
@@ -336,19 +429,25 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
             print(f"      > Inicio MÍNIMO REAL (max): {fecha_inicio_minima_real}.")
 
 
-            # --- E. LÓGICA "WALK THE CALENDAR" ---
-            horas_pendientes = horas_necesarias_totales
-            fecha_a_buscar = fecha_inicio_minima_real # ❗️ Empezamos desde la fecha MÍNIMA
+           # --- E. LÓGICA "WALK THE CALENDAR" ---
+            
+            # ❗️ 1. Variable para rastrear la cantidad restante de la OP
+            cantidad_pendiente_op = cantidad_a_producir 
+            
+            horas_pendientes = horas_necesarias_totales 
+            fecha_a_buscar = fecha_inicio_minima_real
             fecha_inicio_real_asignada = None
             fecha_fin_real_asignada = None
             reservas_a_crear_bulk = []
             
-            print(f"      > Buscando hueco desde {fecha_a_buscar}...")
+            print(f"       > Buscando hueco desde {fecha_a_buscar}...")
 
-            while horas_pendientes > 0:
+            # ❗️ 2. El bucle ahora TAMBIÉN debe chequear la cantidad
+            while horas_pendientes > 0 and cantidad_pendiente_op > 0:
                 horas_libres_cuello_botella = HORAS_LABORABLES_POR_DIA
                 lineas_ids_producto = [c.id_linea_produccion_id for c in capacidades_linea]
                 
+                # ... (Lógica de carga_existente no cambia) ...
                 carga_existente = CalendarioProduccion.objects.filter(
                     id_linea_produccion_id__in=lineas_ids_producto,
                     fecha=fecha_a_buscar,
@@ -372,32 +471,69 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                     fecha_a_buscar += timedelta(days=1)
                     continue
                     
-                horas_a_reservar_hoy = min(horas_pendientes, horas_libres_enteras)
+                horas_a_reservar_hoy = min(horas_pendientes, horas_libres_enteras) 
+
+                se_reservo_tiempo_en_fecha = False
 
                 for cap_linea in capacidades_linea:
-                    cantidad_dia_linea = round(float(horas_a_reservar_hoy) * float(cap_linea.cant_por_hora))
                     
-                    if horas_a_reservar_hoy > 0:
+                    # ❗️ 3. Calcular la cantidad MÁXIMA que esta línea puede hacer
+                    # Ej: (2 horas * 75/hr) = 150
+                    cantidad_calculada_linea = round(float(horas_a_reservar_hoy) * float(cap_linea.cant_por_hora))
+                    
+                    # ❗️ 4. LIMITAR esa cantidad a lo que realmente falta
+                    # Ej: min(100, 150) = 100
+                    cantidad_real_linea = min(cantidad_pendiente_op, cantidad_calculada_linea)
+
+                    if horas_a_reservar_hoy > 0 and cantidad_real_linea > 0:
+                        se_reservo_tiempo_en_fecha = True 
+                        
+                        # ❗️ 5. CORRECCIÓN: Usar el bloque de horas entero (horas_a_reservar_hoy)
+                        # NO calcular 'horas_reales_linea'.
+                        
                         reservas_a_crear_bulk.append(
                             CalendarioProduccion(
-                                # ❗️ Asignamos la OP (que aún no tiene PK)
                                 id_orden_produccion=op, 
                                 id_linea_produccion=cap_linea.id_linea_produccion,
                                 fecha=fecha_a_buscar,
-                                horas_reservadas=horas_a_reservar_hoy,
-                                cantidad_a_producir=cantidad_dia_linea
+                                horas_reservadas=horas_a_reservar_hoy, # ❗️ USAR EL BLOQUE TOTAL (Ej: 2)
+                                cantidad_a_producir=cantidad_real_linea # ❗️ USAR CANTIDAD REAL (Ej: 100)
                             )
                         )
+                        
+                        # ❗️ 6. RESTAR de la cantidad pendiente
+                        cantidad_pendiente_op -= cantidad_real_linea
+                        
+                        # ❗️ Si esta línea ya completa la OP, no asignar más líneas
+                        if cantidad_pendiente_op <= 0:
+                            break 
                 
-                horas_pendientes -= horas_a_reservar_hoy
+                # --- Fuera del bucle for cap_linea ---
+
+                if se_reservo_tiempo_en_fecha:
+                    horas_pendientes -= horas_a_reservar_hoy 
                 
-                if fecha_inicio_real_asignada is None:
-                    fecha_inicio_real_asignada = fecha_a_buscar
+                    if fecha_inicio_real_asignada is None:
+                        fecha_inicio_real_asignada = fecha_a_buscar
+                    
+                    print(f"       > Reservadas {horas_a_reservar_hoy}hs enteras en {fecha_a_buscar}. Faltan {horas_pendientes}hs. Quedan {cantidad_pendiente_op} unidades.")
                 
-                print(f"      > Reservadas {horas_a_reservar_hoy}hs enteras en {fecha_a_buscar}. Faltan {horas_pendientes}hs.")
-                fecha_a_buscar += timedelta(days=1)
+                if cantidad_pendiente_op <= 0:
+                    horas_pendientes = 0 # Forzar salida del while
+                    
+                if (horas_pendientes > 0) or (not se_reservo_tiempo_en_fecha):
+                    fecha_a_buscar += timedelta(days=1)
+                
+
+            # --- Fuera del bucle while ---
+            if fecha_inicio_real_asignada is None:
+                fecha_inicio_real_asignada = fecha_inicio_minima_real
             
             fecha_fin_real_asignada = fecha_a_buscar - timedelta(days=1)
+            
+            # Asegurarse que la fecha de fin no sea anterior a la de inicio
+            if fecha_fin_real_asignada < fecha_inicio_real_asignada:
+                fecha_fin_real_asignada = fecha_inicio_real_asignada
 
             # --- F. GUARDAR OP, PEGGING Y RESERVAS DE CALENDARIO ---
             

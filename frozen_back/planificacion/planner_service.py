@@ -135,7 +135,8 @@ def ejecutar_planificador(fecha_simulada: date):
             if t == max_tandas - 1:
                 sobra = total_task_qty - (tamano_tanda * (max_tandas - 1))
                 if sobra < minimo:
-                    print(f"⚠️ Tanda final de Tarea {cal_task.id} (OP {op.id}) en línea {linea.id_linea_produccion} ({sobra}u) < mínimo ({minimo}). No se generará.")
+                    # LÍNEA CORREGIDA:
+                    print(f"⚠️ Tanda final de Tarea {cal_task.id} (OP {op.id_orden_produccion}) en línea {linea.id_linea_produccion} ({sobra}u) < mínimo ({minimo}). No se generará.")
                     continue
                 tamano_real = sobra
             else:
