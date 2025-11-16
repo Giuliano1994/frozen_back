@@ -188,6 +188,34 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
         else:
             print(f"     ❌ OV {ov.id_orden_venta} no pudo cambiar de estado (falta stock).")
 
+
+    # ===================================================================
+    # 🆕 PASO 0.5: LIMPIEZA DE RESERVAS DE OVs CANCELADAS
+    # (Liberar stock PT retenido por ventas que se cancelaron)
+    # ===================================================================
+    print(f"\n[PASO 0.5] Liberando stock de Órdenes de Venta canceladas...")
+
+    # 1. Buscar el estado "Cancelada" (ajusta el string si tu estado se llama diferente, ej: "Anulada")
+    try:
+        estado_ov_cancelada = EstadoVenta.objects.get(descripcion__icontains="Cancelada")
+        
+        # 2. Borrar todas las reservas de stock asociadas a OVs en ese estado
+        #    Filtramos: Reserva -> LineaOV -> OV -> Estado
+        reservas_a_liberar = ReservaStock.objects.filter(
+            id_orden_venta_producto__id_orden_venta__id_estado_venta=estado_ov_cancelada
+        )
+        
+        cantidad_reservas = reservas_a_liberar.count()
+        
+        if cantidad_reservas > 0:
+            reservas_a_liberar.delete()
+            print(f"   ✅ Se liberaron {cantidad_reservas} reservas de stock. Ahora están disponibles para otras OVs.")
+        else:
+            print("   > No hay reservas retenidas por OVs canceladas.")
+            
+    except EstadoVenta.DoesNotExist:
+        print("   ⚠️ No se encontró el estado 'Cancelada' en la BD. Saltando limpieza.")
+        
     # ===================================================================
     # PASO 1-3: JIT Y LÍNEAS PENDIENTES
     # ===================================================================
@@ -558,26 +586,31 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
             
             print(f"      -> PLANIFICACIÓN REAL: {op.fecha_planificada.date()} a {op.fecha_fin_planificada}.")
 
-            # --- G. REPROGRAMACIÓN DE OV (MTO) ---
-            nueva_fecha_entrega_sugerida_date = op.fecha_fin_planificada + timedelta(days=DIAS_BUFFER_ENTREGA_PT)
+           # 1. Calculamos la nueva fecha sugerida (Fin Producción + Buffer + 1 día seguridad)
+            dias_totales_margen = DIAS_BUFFER_ENTREGA_PT + 1
+            nueva_fecha_entrega_sugerida_date = op.fecha_fin_planificada + timedelta(days=dias_totales_margen)
 
+            # 2. Verificamos si hay retraso (Si la nueva fecha es MAYOR a la original)
             if nueva_fecha_entrega_sugerida_date > ov.fecha_entrega.date():
+                
                 print(f"      !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                 print(f"      !!! ALERTA DE ENTREGA: OP {op.id_orden_produccion}")
                 print(f"      !!! Vinculada a: OV {ov.id_orden_venta} (Entrega actual: {ov.fecha_entrega.date()})")
                 print(f"      !!! Producción termina el: {op.fecha_fin_planificada}")
                 print(f"      !!! Nueva fecha de entrega sugerida: {nueva_fecha_entrega_sugerida_date}")
                 print(f"      !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                
-                dias_totales_margen = DIAS_BUFFER_ENTREGA_PT
-                hora_original = ov.fecha_entrega.time()
-                nueva_fecha_naive = datetime.combine(nueva_fecha_entrega_sugerida_date, hora_original)
-                nueva_fecha_entrega_aware = timezone.make_aware(nueva_fecha_naive) + timedelta(days=dias_totales_margen)
 
-                print(f"      !!! DESPLAZANDO OV {ov.id_orden_venta} a {nueva_fecha_entrega_aware.date()}")
+                print(f"      !!! DESPLAZANDO OV {ov.id_orden_venta} a {nueva_fecha_entrega_sugerida_date}")
                 
-                ov.fecha_entrega = nueva_fecha_entrega_aware
+                # ✅ SOLUCIÓN: Asignación DIRECTA.
+                # 'nueva_fecha_entrega_sugerida_date' ya es un objeto 'date' válido.
+                # No hace falta convertirlo a datetime ni agregar timezone.
+                # Django se encarga del resto.
+                
+                ov.fecha_entrega = nueva_fecha_entrega_sugerida_date
                 ov.id_estado_venta = estado_ov_en_preparacion 
+                
+                # Guardamos solo los campos modificados
                 ov.save(update_fields=['fecha_entrega', 'id_estado_venta'])
 
             # --- H. LÓGICA DE LOTE ---

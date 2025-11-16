@@ -50,7 +50,7 @@ def ejecutar_planificador(fecha_simulada: date):
     # O "En proceso" (días siguientes).
     
     # ❗️ CORRECCIÓN: Sacamos "Finalizada" de aquí.
-    estados_op_validos = ["Pendiente de inicio", "En proceso"]
+    estados_op_validos = ["Pendiente de inicio", "En proceso", "Finalizada"]
     
     tasks_today = list(
         CalendarioProduccion.objects.filter(

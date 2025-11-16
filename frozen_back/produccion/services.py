@@ -295,101 +295,100 @@ def calcular_porcentaje_desperdicio_historico(id_producto: int, from_date=None, 
 
 
 
-
 @transaction.atomic
 def verificar_y_actualizar_op_segun_ots(orden_produccion_id):
     """
     (PASO 2: FINALIZACIÓN DE PRODUCCIÓN)
-    Verifica las OTs de una OP. Si todas están en estado final,
-    actualiza la OP a 'Finalizada', descuenta stock y ajusta el lote.
-    
-    Esta función se debe llamar cuando una OT se completa en la planta.
+    Verifica las OTs de una OP. 
+    Solo finaliza la OP si:
+      1. Todas las OTs existentes están finalizadas.
+      2. NO quedan tareas pendientes en el CalendarioProduccion (futuro).
     """
     try:
-        orden = OrdenProduccion.objects.get(id_orden_produccion=orden_produccion_id)
+        # Usamos select_related/prefetch_related para optimizar
+        orden = OrdenProduccion.objects.prefetch_related(
+            'ordenes_de_trabajo', 
+            'reservas_calendario'
+        ).get(id_orden_produccion=orden_produccion_id)
     except OrdenProduccion.DoesNotExist:
         print(f"Error: No se encontró la OP {orden_produccion_id} para verificar.")
         return
 
-    # ❗️ CHEQUEO DE ESTADO:
-    # Solo actuamos sobre OPs que el planificador ya marcó como 'Planificada'
-    # o que ya están 'En proceso' (si las OTs se pueden completar en varios días)
+    # ❗️ CHEQUEO DE ESTADO
     if orden.id_estado_orden_produccion.descripcion not in ["Planificada", "En proceso"]:
-        print(f"Info: OP {orden.id_orden_produccion} no está 'Planificada' o 'En proceso'. El trigger de OT se ignora.")
+        print(f"Info: OP {orden.id_orden_produccion} no está en curso. Se ignora trigger.")
         return
 
-    # 1. Definir qué estados de OT cuentan como "finalizados"
-    estados_finales_ot = Q(
-        id_estado_orden_trabajo__descripcion__iexact='Completada'
-    ) | Q(
-        id_estado_orden_trabajo__descripcion__iexact='Cancelada'
-    )
+    # 1. Definir estados finales de OT
+    estados_finales_ot = Q(id_estado_orden_trabajo__descripcion__iexact='Completada') | \
+                         Q(id_estado_orden_trabajo__descripcion__iexact='Cancelada')
 
-    # 2. Contar OTs (Asumiendo related_name='ordenes_de_trabajo')
-    # ❗️ Si tu related_name es 'ordendetrabajo_set', cambia 'orden.ordenes_de_trabajo'
+    # 2. Contar OTs (Ordenes de Trabajo REALES ya creadas)
     try:
         total_ots = orden.ordenes_de_trabajo.count()
         ots_finalizadas = orden.ordenes_de_trabajo.filter(estados_finales_ot).count()
     except AttributeError:
-        print(f"Error: 'related_name' para OTs en OP no es 'ordenes_de_trabajo'. Ajustar el código.")
+        print(f"Error: Verifica los related_names en tu modelo.")
         return
 
-    # 3. Condición de finalización
-    if total_ots > 0 and total_ots == ots_finalizadas:
+    # 🆕 2.5. Contar Tareas de Calendario (Reservas FUTURAS pendientes de convertir a OT)
+    # Como tu Scheduler BORRA las tareas del calendario cuando crea las OTs,
+    # si hay registros aquí, significa que falta fabricar en el futuro.
+    tareas_pendientes_calendario = orden.reservas_calendario.count()
+
+    # 3. Condición de finalización ROBUSTA
+    # - Debe haber al menos una OT creada (total_ots > 0)
+    # - Todas las OTs creadas deben estar terminadas (total_ots == ots_finalizadas)
+    # - NO debe quedar nada en el calendario (tareas_pendientes_calendario == 0)
+    
+    condicion_ots_ok = (total_ots > 0 and total_ots == ots_finalizadas)
+    condicion_calendario_ok = (tareas_pendientes_calendario == 0)
+
+    if condicion_ots_ok and condicion_calendario_ok:
         
-        print(f"Todas las OTs para la OP {orden.id_orden_produccion} están finalizadas. Actualizando OP...")
+        print(f"✅ OP {orden.id_orden_produccion}: Todas las OTs terminadas y calendario vacío. Finalizando OP...")
         
-        # 4. Obtener estados
+        # 4. Obtener estados (Sin cambios)
         try:
             estado_op_finalizada = EstadoOrdenProduccion.objects.get(descripcion__iexact="Finalizada")
             estado_lote_disponible = EstadoLoteProduccion.objects.get(descripcion__iexact="Disponible")
-        except (EstadoOrdenProduccion.DoesNotExist, EstadoLoteProduccion.DoesNotExist) as e:
-            print(f"Error: No se encontró estado 'Finalizada' o 'Disponible'. {e}")
-            raise ValidationError(f"Estados 'Finalizada'/'Disponible' no configurados: {e}")
-
-        # 5. LÓGICA DE FINALIZACIÓN
-        
-        # 5.1. Descontar stock reservado (Consumo de MP)
-        try:
-            # ❗️ Debes implementar esta función
-            # descontar_stock_reservado(orden) 
-            pass # Placeholder
-            print(f"Descontando stock de MP para OP {orden.id_orden_produccion}...")
         except Exception as e:
-            print(f"Error al descontar stock para OP {orden.id_orden_produccion}: {e}")
-            raise ValidationError(f"Error descontando stock: {e}")
+            print(f"Error de configuración de estados: {e}")
+            return # O raise
 
-        # 5.2. Actualizar Lote de Producción (Ingreso de PT)
+        # 5. LÓGICA DE FINALIZACIÓN (Sin cambios)
+        
+        # 5.1. Descontar stock MP (Placeholder)
+        # descontar_stock_reservado(orden)
+
+        # 5.2. Actualizar Lote
         if orden.id_lote_produccion:
             lote = orden.id_lote_produccion
             
-            # Suma la 'cantidad_producida' (real) solo de OTs 'Completadas'
             total_producido_real = orden.ordenes_de_trabajo.filter(
                 id_estado_orden_trabajo__descripcion__iexact='Completada'
-            ).aggregate(
-                total=Sum('cantidad_producida')
-            )['total'] or 0
+            ).aggregate(total=Sum('cantidad_producida'))['total'] or 0
             
             lote.cantidad = total_producido_real
             lote.id_estado_lote_produccion = estado_lote_disponible
             lote.save()
             
-            # Actualiza la cantidad de la OP a la real producida
-            orden.cantidad = total_producido_real
-            
-            print(f"Lote {lote.id_lote_produccion} actualizado. Cantidad final: {total_producido_real}")
+            orden.cantidad = total_producido_real # Actualizamos la OP también
+            print(f"   > Lote actualizado con cantidad real: {total_producido_real}")
 
-        # 5.3. Actualizar estado de la OP
+        # 5.3. Actualizar estado OP
         orden.id_estado_orden_produccion = estado_op_finalizada
         orden.save()
-        
-        print(f"✅ OP {orden.id_orden_produccion} marcada como 'Finalizada'.")
+        print(f"   > Estado OP actualizado a Finalizada.")
 
     else:
-        print(f"OP {orden.id_orden_produccion}: {ots_finalizadas}/{total_ots} OTs finalizadas. Aún no se completa (sigue 'Planificada' o 'En proceso').")
-
-
-
+        # Log detallado para saber por qué no cierra
+        motivo = []
+        if total_ots == 0: motivo.append("No hay OTs creadas")
+        if total_ots != ots_finalizadas: motivo.append(f"Faltan finalizar OTs ({ots_finalizadas}/{total_ots})")
+        if tareas_pendientes_calendario > 0: motivo.append(f"Quedan {tareas_pendientes_calendario} días/tareas en calendario")
+        
+        print(f"⏳ OP {orden.id_orden_produccion} continúa abierta. Motivos: {', '.join(motivo)}.")
 
 
 
