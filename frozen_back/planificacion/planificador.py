@@ -132,56 +132,271 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
     for item in compras_en_proceso:
         stock_virtual_oc[item.id_materia_prima_id] += item.cantidad
     
-
-    print("   > Ajustando stock virtual (OCs) según demanda de OPs en curso...")
-    
-    # 1. Buscar OPs activas que todavía están esperando materiales o por iniciar
-    ops_activas_ajuste = OrdenProduccion.objects.filter(
-        id_estado_orden_produccion__in=[estado_op_en_espera, estado_op_pendiente_inicio]
-    )
-
-    total_descontado_de_oc = 0
-
-    for op in ops_activas_ajuste:
-        try:
-            # Obtenemos la receta para saber qué consume esta OP realmente
-            receta = Receta.objects.get(id_producto=op.id_producto)
-            ingredientes = RecetaMateriaPrima.objects.filter(id_receta=receta)
-            
-            for ing in ingredientes:
-                mp_id = ing.id_materia_prima_id
-                
-                # A. Cuánto necesita la OP en total
-                cantidad_total_requerida = ing.cantidad * op.cantidad
-                
-                # B. Cuánto YA tiene asegurado físicamente (Reservas reales en BD)
-                # (Esto ya fue descontado de 'stock_virtual_mp' por la función get_stock_disponible...)
-                reservas_fisicas = ReservaMateriaPrima.objects.filter(
-                    id_orden_produccion=op,
-                    id_lote_materia_prima__id_materia_prima_id=mp_id
-                ).aggregate(total=Sum('cantidad_reservada'))['total'] or 0
-                
-                # C. Cuánto le falta (esto es lo que "come" de las OCs en camino)
-                demanda_pendiente = cantidad_total_requerida - reservas_fisicas
-                
-                if demanda_pendiente > 0:
-                    # Restamos esa demanda del pool de Compras (stock_virtual_oc)
-                    # Si el pool llega a cero o negativo, el Paso 6 generará compras nuevas. Correcto.
-                    stock_virtual_oc[mp_id] -= demanda_pendiente
-                    total_descontado_de_oc += demanda_pendiente
-
-        except Receta.DoesNotExist:
-            print(f"     ⚠️ OP {op.id_orden_produccion} no tiene receta. No se puede descontar stock.")
-
-    print(f"   > Total descontado de OCs en camino (comprometido): {total_descontado_de_oc}")
-
-
     # Diccionario para agrupar compras (Se inicializa 1 vez)
     compras_agregadas_por_proveedor = defaultdict(lambda: {
         "proveedor": None,
         "fecha_requerida_mas_temprana": date(9999, 12, 31),
         "items": defaultdict(int) 
     })
+
+    # ===================================================================
+    # 🆕 PASO 0.6: BALANCE GLOBAL DE MP Y REPLANIFICACIÓN DE OPs EXISTENTES
+    # (Revisa OPs 'En espera', genera OCs Y replanifica la OP si la MP se retrasa)
+    # ===================================================================
+    print(f"\n[PASO 0.6] Balanceando MP para OPs existentes (pre-asignación y OCs)...")
+
+    ops_activas_balance = OrdenProduccion.objects.filter(
+        id_estado_orden_produccion__in=[estado_op_en_espera, estado_op_pendiente_inicio]
+    ).select_related('id_producto').order_by('fecha_planificada')
+
+    print(f"   > Analizando {ops_activas_balance.count()} OPs existentes ('En espera', 'Pendiente')...")
+
+    for op in ops_activas_balance:
+        if not op.fecha_planificada:
+            print(f"     ⚠️ OP {op.id_orden_produccion} no tiene fecha planificada, usando 'hoy'.")
+            fecha_requerida_mp = hoy - timedelta(days=DIAS_BUFFER_RECEPCION_MP)
+        else:
+            fecha_requerida_mp = op.fecha_planificada.date() - timedelta(days=DIAS_BUFFER_RECEPCION_MP)
+        
+        max_lead_time_op = 0 # Para esta OP específica
+        
+        try:
+            receta = Receta.objects.get(id_producto=op.id_producto)
+            ingredientes = RecetaMateriaPrima.objects.filter(id_receta=receta).select_related('id_materia_prima__id_proveedor')
+            
+            for ing in ingredientes:
+                mp_id = ing.id_materia_prima_id
+                mp = ing.id_materia_prima
+                proveedor = mp.id_proveedor
+                
+                cantidad_total_requerida = ing.cantidad * op.cantidad
+                
+                reservas_fisicas = ReservaMateriaPrima.objects.filter(
+                    id_orden_produccion=op,
+                    id_lote_materia_prima__id_materia_prima_id=mp_id,
+                    id_estado_reserva_materia=estado_reserva_mp_activa
+                ).aggregate(total=Sum('cantidad_reservada'))['total'] or 0
+                
+                demanda_pendiente = cantidad_total_requerida - reservas_fisicas
+                
+                if demanda_pendiente <= 0:
+                    continue 
+
+                stock_mp_disponible = stock_virtual_mp.get(mp_id, 0)
+                tomar_de_stock = min(stock_mp_disponible, demanda_pendiente)
+                
+                if tomar_de_stock > 0:
+                    stock_virtual_mp[mp_id] -= tomar_de_stock
+                    demanda_pendiente -= tomar_de_stock
+                    print(f"     > (OP {op.id_orden_produccion}) pre-asigna {tomar_de_stock} de MP {mp_id} (del stock físico).")
+
+                if demanda_pendiente <= 0:
+                    continue 
+
+                stock_oc_disponible = stock_virtual_oc.get(mp_id, 0)
+                tomar_de_oc = min(stock_oc_disponible, demanda_pendiente)
+                
+                if tomar_de_oc > 0:
+                    stock_virtual_oc[mp_id] -= tomar_de_oc
+                    demanda_pendiente -= tomar_de_oc
+                    print(f"     > (OP {op.id_orden_produccion}) pre-asigna {tomar_de_oc} de MP {mp_id} (de OCs en camino).")
+
+                if demanda_pendiente <= 0:
+                    continue 
+
+                cantidad_a_comprar = demanda_pendiente
+                
+                if cantidad_a_comprar > 0:
+                    print(f"     ⚠️ (OP {op.id_orden_produccion}) NECESITA COMPRAR {cantidad_a_comprar} de MP {mp_id}.")
+                    
+                    # 1. Registrar el lead time de esta compra
+                    lead_proveedor = proveedor.lead_time_days
+                    max_lead_time_op = max(max_lead_time_op, lead_proveedor)
+                    
+                    # 2. Agregar al diccionario GLOBAL de compras
+                    compra_agregada = compras_agregadas_por_proveedor[proveedor.id_proveedor]
+                    compra_agregada["proveedor"] = proveedor
+                    compra_agregada["items"][mp_id] += cantidad_a_comprar
+                    
+                    if fecha_requerida_mp < compra_agregada["fecha_requerida_mas_temprana"]:
+                        compra_agregada["fecha_requerida_mas_temprana"] = fecha_requerida_mp
+
+            # --- FIN DEL BUCLE DE INGREDIENTES ---
+            # Ahora, verificamos si esta OP necesita replanificación
+            
+            if max_lead_time_op > 0:
+                # Esta OP ha disparado una nueva compra. Debemos RECALCULAR su fecha de inicio.
+                print(f"     > OP {op.id_orden_produccion} requiere comprar MP (Lead time: {max_lead_time_op} dias). Verificando replanificación...")
+
+                # 1. Calcular cuándo llega la MP (Lógica de PASO 6, ajustada a dias hábiles)
+                fecha_solicitud_oc = hoy
+                fecha_entrega_oc = hoy + timedelta(days=max_lead_time_op)
+                while fecha_entrega_oc.weekday() >= 5: # Mover a Lunes si cae finde
+                    fecha_entrega_oc += timedelta(days=1)
+                
+                # 2. Calcular cuándo puede empezar la OP
+                fecha_inicio_por_materiales = fecha_entrega_oc + timedelta(days=DIAS_BUFFER_RECEPCION_MP)
+                while fecha_inicio_por_materiales.weekday() >= 5: # Mover a Lunes
+                    fecha_inicio_por_materiales += timedelta(days=1)
+
+                # 3. Comparar con la fecha actual
+                fecha_inicio_actual = op.fecha_planificada.date()
+
+                if fecha_inicio_por_materiales > fecha_inicio_actual:
+                    print(f"    🚨 ¡RETRASO DETECTADO! OP {op.id_orden_produccion}")
+                    print(f"       Fecha actual: {fecha_inicio_actual}. Nueva fecha por MP: {fecha_inicio_por_materiales}.")
+                    print(f"       REPLANIFICANDO esta OP...")
+                    
+                    # --- INICIO LÓGICA DE REPLANIFICACIÓN (Copiada de PASO 5) ---
+                    
+                    # 1. Borrar calendario viejo
+                    CalendarioProduccion.objects.filter(id_orden_produccion=op).delete()
+                    
+                    # 2. Recalcular horas necesarias
+                    capacidades_linea = ProductoLinea.objects.filter(id_producto=op.id_producto)
+                    if not capacidades_linea.exists():
+                        print(f"    !ERROR: {op.id_producto.nombre} no tiene líneas. No se puede replanificar.")
+                        continue
+
+                    cant_total_por_hora = capacidades_linea.aggregate(total=Sum('cant_por_hora'))['total'] or 0
+                    if cant_total_por_hora <= 0:
+                        print(f"    !ERROR: {op.id_producto.nombre} capacidad 0/hr. No se puede replanificar.")
+                        continue
+                    
+                    horas_necesarias_float = float(op.cantidad) / float(cant_total_por_hora)
+                    horas_necesarias_totales = math.ceil(horas_necesarias_float)
+                    
+                    # 3. Walk the calendar
+                    fecha_a_buscar = fecha_inicio_por_materiales # ❗️ Usamos la nueva fecha
+                    horas_pendientes = horas_necesarias_totales
+                    cantidad_pendiente_op = op.cantidad
+                    reservas_a_crear_bulk = []
+                    fecha_inicio_real_asignada = None
+
+                    print(f"       Buscando nuevo hueco desde {fecha_a_buscar}...")
+                    
+                    # --- INICIO: Bucle "Walk the Calendar" ---
+                    while horas_pendientes > 0 and cantidad_pendiente_op > 0:
+                        # (Asegúrate que HORAS_LABORABLES_POR_DIA sea accesible globalmente)
+                        horas_libres_cuello_botella = HORAS_LABORABLES_POR_DIA
+                        lineas_ids_producto = [c.id_linea_produccion_id for c in capacidades_linea]
+                        
+                        carga_existente = CalendarioProduccion.objects.filter(
+                            id_linea_produccion_id__in=lineas_ids_producto,
+                            fecha=fecha_a_buscar,
+                            id_orden_produccion__id_estado_orden_produccion__in=[estado_op_en_espera, estado_op_pendiente_inicio]
+                        ).values('id_linea_produccion_id').annotate(
+                            total_reservado=Sum('horas_reservadas')
+                        ).values('id_linea_produccion_id', 'total_reservado')
+                        
+                        carga_por_linea = {c['id_linea_produccion_id']: float(c['total_reservado']) for c in carga_existente}
+
+                        for linea_id in lineas_ids_producto:
+                            carga_dia = carga_por_linea.get(linea_id, 0.0)
+                            horas_libres_linea = max(0, HORAS_LABORABLES_POR_DIA - carga_dia)
+                            horas_libres_cuello_botella = min(horas_libres_cuello_botella, horas_libres_linea)
+
+                        horas_libres_enteras = math.floor(horas_libres_cuello_botella)
+
+                        if horas_libres_enteras <= 0:
+                            fecha_a_buscar += timedelta(days=1)
+                            while fecha_a_buscar.weekday() >= 5: fecha_a_buscar += timedelta(days=1)
+                            continue
+                            
+                        horas_a_reservar_hoy = min(horas_pendientes, horas_libres_enteras) 
+                        se_reservo_tiempo_en_fecha = False
+
+                        for cap_linea in capacidades_linea:
+                            cantidad_calculada_linea = round(float(horas_a_reservar_hoy) * float(cap_linea.cant_por_hora))
+                            cantidad_real_linea = min(cantidad_pendiente_op, cantidad_calculada_linea)
+
+                            if horas_a_reservar_hoy > 0 and cantidad_real_linea > 0:
+                                se_reservo_tiempo_en_fecha = True 
+                                
+                                reservas_a_crear_bulk.append(
+                                    CalendarioProduccion(
+                                        id_orden_produccion=op, 
+                                        id_linea_produccion=cap_linea.id_linea_produccion,
+                                        fecha=fecha_a_buscar,
+                                        horas_reservadas=horas_a_reservar_hoy,
+                                        cantidad_a_producir=cantidad_real_linea
+                                    )
+                                )
+                                cantidad_pendiente_op -= cantidad_real_linea
+                                if cantidad_pendiente_op <= 0:
+                                    break 
+                        
+                        if se_reservo_tiempo_en_fecha:
+                            horas_pendientes -= horas_a_reservar_hoy 
+                            if fecha_inicio_real_asignada is None:
+                                fecha_inicio_real_asignada = fecha_a_buscar
+                            print(f"       > Re-reservadas {horas_a_reservar_hoy}hs en {fecha_a_buscar}.")
+                        
+                        if cantidad_pendiente_op <= 0:
+                            horas_pendientes = 0 
+                            break
+
+                        fecha_a_buscar += timedelta(days=1)
+                        while fecha_a_buscar.weekday() >= 5:
+                            fecha_a_buscar += timedelta(days=1)
+                        
+                        if cantidad_pendiente_op > 0:
+                            horas_pendientes = horas_necesarias_totales
+                    # --- FIN: Bucle "Walk the Calendar" ---
+
+                    if fecha_inicio_real_asignada is None:
+                        fecha_inicio_real_asignada = fecha_inicio_por_materiales
+                    
+                    fecha_fin_real_asignada = fecha_a_buscar - timedelta(days=1)
+                    while fecha_fin_real_asignada.weekday() >= 5:
+                         fecha_fin_real_asignada -= timedelta(days=1)
+                    if fecha_fin_real_asignada < fecha_inicio_real_asignada:
+                        fecha_fin_real_asignada = fecha_inicio_real_asignada
+                    
+                    # 4. Guardar OP y Calendario
+                    op.fecha_planificada = timezone.make_aware(datetime.combine(fecha_inicio_real_asignada, datetime.min.time()))
+                    op.fecha_fin_planificada = fecha_fin_real_asignada
+                    op.id_estado_orden_produccion = estado_op_en_espera # Pasa a 'En espera' porque necesita MP
+                    op.save()
+                    
+                    CalendarioProduccion.objects.bulk_create(reservas_a_crear_bulk)
+                    print(f"       ✅ OP {op.id_orden_produccion} REPLANIFICADA. Nuevo rango: {op.fecha_planificada.date()} a {op.fecha_fin_planificada}.")
+
+                    # 5. REVISAR Y DESPLAZAR OVs VINCULADAS
+                    peggings = OrdenProduccionPegging.objects.filter(id_orden_produccion=op).select_related('id_orden_venta_producto__id_orden_venta')
+                    ovs_actualizadas = set() 
+
+                    for peg in peggings:
+                        ov = peg.id_orden_venta_producto.id_orden_venta
+                        if ov.id_orden_venta in ovs_actualizadas:
+                            continue
+
+                        dias_totales_margen = DIAS_BUFFER_ENTREGA_PT + 1
+                        nueva_fecha_entrega_sugerida_date = op.fecha_fin_planificada + timedelta(days=dias_totales_margen)
+                        
+                        while nueva_fecha_entrega_sugerida_date.weekday() >= 5:
+                             nueva_fecha_entrega_sugerida_date += timedelta(days=1) 
+
+                        if nueva_fecha_entrega_sugerida_date > ov.fecha_entrega.date():
+                            print(f"    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                            print(f"    !!! ALERTA DE ENTREGA (REPLANIFICACIÓN): OP {op.id_orden_produccion}")
+                            print(f"    !!! Vinculada a: OV {ov.id_orden_venta} (Entrega actual: {ov.fecha_entrega.date()})")
+                            print(f"    !!! Producción AHORA termina el: {op.fecha_fin_planificada}")
+                            print(f"    !!! DESPLAZANDO OV {ov.id_orden_venta} a {nueva_fecha_entrega_sugerida_date}")
+                            print(f"    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                            
+                            ov.fecha_entrega = nueva_fecha_entrega_sugerida_date
+                            ov.id_estado_venta = estado_ov_en_preparacion 
+                            ov.save(update_fields=['fecha_entrega', 'id_estado_venta'])
+                            ovs_actualizadas.add(ov.id_orden_venta)
+                
+                # --- FIN LÓGICA DE REPLANIFICACIÓN ---
+
+        except Receta.DoesNotExist:
+            print(f"     ⚠️ OP {op.id_orden_produccion} no tiene receta. No se puede balancear MP.")
+
+
+
     
     # ===================================================================
     # 🆕 PASO 0: CIERRE DE OVs PARA MAÑANA
