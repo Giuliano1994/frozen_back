@@ -132,6 +132,50 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
     for item in compras_en_proceso:
         stock_virtual_oc[item.id_materia_prima_id] += item.cantidad
     
+
+    print("   > Ajustando stock virtual (OCs) según demanda de OPs en curso...")
+    
+    # 1. Buscar OPs activas que todavía están esperando materiales o por iniciar
+    ops_activas_ajuste = OrdenProduccion.objects.filter(
+        id_estado_orden_produccion__in=[estado_op_en_espera, estado_op_pendiente_inicio]
+    )
+
+    total_descontado_de_oc = 0
+
+    for op in ops_activas_ajuste:
+        try:
+            # Obtenemos la receta para saber qué consume esta OP realmente
+            receta = Receta.objects.get(id_producto=op.id_producto)
+            ingredientes = RecetaMateriaPrima.objects.filter(id_receta=receta)
+            
+            for ing in ingredientes:
+                mp_id = ing.id_materia_prima_id
+                
+                # A. Cuánto necesita la OP en total
+                cantidad_total_requerida = ing.cantidad * op.cantidad
+                
+                # B. Cuánto YA tiene asegurado físicamente (Reservas reales en BD)
+                # (Esto ya fue descontado de 'stock_virtual_mp' por la función get_stock_disponible...)
+                reservas_fisicas = ReservaMateriaPrima.objects.filter(
+                    id_orden_produccion=op,
+                    id_lote_materia_prima__id_materia_prima_id=mp_id
+                ).aggregate(total=Sum('cantidad_reservada'))['total'] or 0
+                
+                # C. Cuánto le falta (esto es lo que "come" de las OCs en camino)
+                demanda_pendiente = cantidad_total_requerida - reservas_fisicas
+                
+                if demanda_pendiente > 0:
+                    # Restamos esa demanda del pool de Compras (stock_virtual_oc)
+                    # Si el pool llega a cero o negativo, el Paso 6 generará compras nuevas. Correcto.
+                    stock_virtual_oc[mp_id] -= demanda_pendiente
+                    total_descontado_de_oc += demanda_pendiente
+
+        except Receta.DoesNotExist:
+            print(f"     ⚠️ OP {op.id_orden_produccion} no tiene receta. No se puede descontar stock.")
+
+    print(f"   > Total descontado de OCs en camino (comprometido): {total_descontado_de_oc}")
+
+
     # Diccionario para agrupar compras (Se inicializa 1 vez)
     compras_agregadas_por_proveedor = defaultdict(lambda: {
         "proveedor": None,
@@ -305,6 +349,9 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                     break
     """
 
+    # ===================================================================
+    # ❗️ PASO 4: CANCELACIÓN DE OPs HUÉRFANAS Y LIBERACIÓN DE MP
+    # ===================================================================
     print(f"\n[PASO 4/6] Verificando OPs 'En espera' huérfanas (OVs canceladas)...")
 
     ov_activas_ids = set(OrdenVenta.objects.filter(
@@ -312,21 +359,23 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
     ).values_list('id_orden_venta', flat=True))
 
     ops_en_espera = OrdenProduccion.objects.filter(
-        id_estado_orden_produccion=estado_op_en_espera
-    ).prefetch_related('ovs_vinculadas__id_orden_venta_producto__id_orden_venta') 
+        id_estado_orden_produccion__in=[estado_op_en_espera, estado_op_pendiente_inicio]
+    ).prefetch_related(
+        'ovs_vinculadas__id_orden_venta_producto__id_orden_venta',
+        'reservamateriaprima_set' # ❗️ Asegurate que el related_name sea correcto, sino usa reserva_materia_prima_set
+    ) 
 
-    ops_a_cancelar = []
+    ops_a_cancelar_objs = [] # Guardamos los objetos, no solo IDs
 
     for op in ops_en_espera:
         
-        # ✅ NUEVA LÓGICA CON LA VARIABLE
-        # Si es manual (False), la ignoramos completamente. No se toca.
-        if not op.es_generada_automaticamente:
-            print(f"   > OP {op.id_orden_produccion} es MANUAL. Se conserva.")
-            continue 
+        # 1. Si es MANUAL, la ignoramos (no se cancela)
+        # (Asumiendo que ya agregaste el campo es_generada_automaticamente)
+        if getattr(op, 'es_generada_automaticamente', False) is False:
+             print(f"   > OP {op.id_orden_produccion} es MANUAL. Se conserva.")
+             continue
 
-        # --- De aquí para abajo es solo para las AUTOMÁTICAS ---
-        
+        # 2. Verificar vinculaciones
         ovs_vinculadas_activas = False
         for peg in op.ovs_vinculadas.all():
             if peg.id_orden_venta_producto.id_orden_venta_id in ov_activas_ids:
@@ -334,17 +383,110 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                 break 
         
         if not ovs_vinculadas_activas:
-            ops_a_cancelar.append(op.id_orden_produccion)
-            print(f"   > OP {op.id_orden_produccion} (Auto) es HUÉRFANA. Marcando para cancelar.")
+            ops_a_cancelar_objs.append(op)
+            print(f"   > OP {op.id_orden_produccion} es HUÉRFANA. Marcando para cancelar.")
 
-    if ops_a_cancelar:
-        ops_canceladas = OrdenProduccion.objects.filter(id_orden_produccion__in=ops_a_cancelar)
-        for op_cancelar in ops_canceladas:
-            CalendarioProduccion.objects.filter(id_orden_produccion=op_cancelar).delete()
-            ReservaMateriaPrima.objects.filter(id_orden_produccion=op_cancelar).delete()
+    # PROCESO DE CANCELACIÓN Y DEVOLUCIÓN DE STOCK A MEMORIA
+    if ops_a_cancelar_objs:
+        print(f"   > Cancelando {len(ops_a_cancelar_objs)} OPs y liberando sus materiales...")
+        
+        for op_cancelar in ops_a_cancelar_objs:
+            
+            # A. Recuperar reservas de MP antes de borrarlas
+            # ❗️ Ajusta 'reserva_materia_prima_set' si tu related_name es diferente en el modelo ReservaMateriaPrima
+            reservas_mp = ReservaMateriaPrima.objects.filter(id_orden_produccion=op_cancelar)
+            
+            for reserva in reservas_mp:
+                mp_id = reserva.id_lote_materia_prima.id_materia_prima_id
+                cantidad_liberada = reserva.cantidad_reservada
+                
+                # B. DEVOLVER AL POOL VIRTUAL (Para que el Paso 5 la use)
+                if mp_id in stock_virtual_mp:
+                    stock_virtual_mp[mp_id] += cantidad_liberada
+                    print(f"     ♻️ Liberados {cantidad_liberada} de MP {mp_id} (Vuelven al pool virtual).")
+                else:
+                    # Si no estaba en el pool (raro), lo inicializamos
+                    stock_virtual_mp[mp_id] = cantidad_liberada
+
+            # C. Borrar datos físicos
+            reservas_mp.delete() # Borra las reservas de MP
+            CalendarioProduccion.objects.filter(id_orden_produccion=op_cancelar).delete() # Borra calendario
+            
+            # D. Marcar OP como cancelada
             op_cancelar.id_estado_orden_produccion = estado_op_cancelada
             op_cancelar.save()
-        print(f"   > {len(ops_a_cancelar)} OPs huérfanas canceladas.")
+
+
+    # ===================================================================
+    # 🆕 PASO 4.5: REASIGNACIÓN DE STOCK A OPs "EN ESPERA"
+    # (Prioridad: Las OPs viejas comen antes que las nuevas)
+    # ===================================================================
+    print(f"\n[PASO 4.5] Intentando asignar stock liberado a OPs antiguas en espera...")
+
+    # 1. Buscamos OPs que siguen esperando material
+    # Ordenamos por fecha para respetar FIFO (primero entra, primero se sirve)
+    ops_remanentes = OrdenProduccion.objects.filter(
+        id_estado_orden_produccion=estado_op_en_espera
+    ).order_by('fecha_planificada')
+
+    for op in ops_remanentes:
+        print(f"   > Re-evaluando OP {op.id_orden_produccion} (Producto: {op.id_producto.nombre})...")
+        
+        try:
+            receta = Receta.objects.get(id_producto=op.id_producto)
+            ingredientes = RecetaMateriaPrima.objects.filter(id_receta=receta)
+            
+            op_completo = True # Asumimos que sí, hasta que falte algo
+            
+            for ing in ingredientes:
+                mp_id = ing.id_materia_prima_id
+                
+                # A. Calcular cuánto necesita TOTAL
+                cantidad_total_necesaria = ing.cantidad * op.cantidad
+                
+                # B. Calcular cuánto YA tiene reservado (de ejecuciones anteriores)
+                reservado_actual = ReservaMateriaPrima.objects.filter(
+                    id_orden_produccion=op,
+                    id_lote_materia_prima__id_materia_prima_id=mp_id
+                ).aggregate(total=Sum('cantidad_reservada'))['total'] or 0
+                
+                cantidad_faltante = cantidad_total_necesaria - reservado_actual
+                
+                if cantidad_faltante <= 0:
+                    continue # Este ingrediente está cubierto
+                
+                # C. Intentar tomar del Stock Virtual (que incluye lo liberado en Paso 4)
+                stock_disp_virtual = stock_virtual_mp.get(mp_id, 0)
+                
+                tomar_ahora = min(stock_disp_virtual, cantidad_faltante)
+                
+                if tomar_ahora > 0:
+                    # 1. Descontar del virtual
+                    stock_virtual_mp[mp_id] -= tomar_ahora
+                    
+                    # 2. Crear la reserva física REAL en BD
+                    #    (Usamos stock REAL para buscar el lote, porque si está en virtual es que está en físico)
+                    stock_real_mp = get_stock_disponible_para_materia_prima(mp_id) 
+                    cant_a_reservar_bd = min(stock_real_mp, tomar_ahora) # Safety check
+                    
+                    if cant_a_reservar_bd > 0:
+                        _reservar_stock_mp(op, mp_id, cant_a_reservar_bd, estado_reserva_mp_activa)
+                        print(f"     ✅ Asignados {cant_a_reservar_bd} de MP {mp_id} a OP {op.id_orden_produccion} (Recuperado).")
+                    
+                    # Recalcular faltante
+                    cantidad_faltante -= tomar_ahora
+
+                if cantidad_faltante > 0:
+                    op_completo = False # Todavía le falta, no puede iniciar
+            
+            # D. Si consiguió TODO, actualizamos estado
+            if op_completo:
+                op.id_estado_orden_produccion = estado_op_pendiente_inicio
+                op.save()
+                print(f"     🎉 ¡OP {op.id_orden_produccion} completó sus materiales! Pasa a 'Pendiente de inicio'.")
+                
+        except Receta.DoesNotExist:
+            print(f"     ⚠️ La OP {op.id_orden_produccion} no tiene receta activa.")
 
 
     # ===================================================================
@@ -464,6 +606,10 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
             
             horas_pendientes = horas_necesarias_totales 
             fecha_a_buscar = fecha_inicio_minima_real
+
+            while fecha_a_buscar.weekday() >= 5: # 5=Sábado, 6=Domingo
+                fecha_a_buscar += timedelta(days=1)
+
             fecha_inicio_real_asignada = None
             fecha_fin_real_asignada = None
             reservas_a_crear_bulk = []
@@ -552,6 +698,21 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                 if (horas_pendientes > 0) or (not se_reservo_tiempo_en_fecha):
                     fecha_a_buscar += timedelta(days=1)
                 
+                while fecha_a_buscar.weekday() >= 5:
+                        fecha_a_buscar += timedelta(days=1)
+
+                # Reseteamos lógica de horas si cambiamos de día y aún falta cantidad
+                if cantidad_pendiente_op > 0:
+                    horas_pendientes = horas_necesarias_totales
+
+                elif se_reservo_tiempo_en_fecha:
+                     # Avanzamos un día
+                     fecha_a_buscar += timedelta(days=1)
+
+                    # ✅ MODIFICACIÓN 3: Aquí también, saltar fines de semana
+                     while fecha_a_buscar.weekday() >= 5:
+                        fecha_a_buscar += timedelta(days=1)
+
 
             # --- Fuera del bucle while ---
             if fecha_inicio_real_asignada is None:
@@ -589,6 +750,9 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
            # 1. Calculamos la nueva fecha sugerida (Fin Producción + Buffer + 1 día seguridad)
             dias_totales_margen = DIAS_BUFFER_ENTREGA_PT + 1
             nueva_fecha_entrega_sugerida_date = op.fecha_fin_planificada + timedelta(days=dias_totales_margen)
+
+            while nueva_fecha_entrega_sugerida_date.weekday() >= 5:
+                nueva_fecha_entrega_sugerida_date += timedelta(days=1)
 
             # 2. Verificamos si hay retraso (Si la nueva fecha es MAYOR a la original)
             if nueva_fecha_entrega_sugerida_date > ov.fecha_entrega.date():
@@ -716,17 +880,22 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
         else:
             print(f"   > Usando OC EXISTENTE {oc.id_orden_compra} para {proveedor.nombre} (Entrega: {fecha_entrega_oc})")
         
+        
         for mp_id, cantidad_necesaria_hoy in info["items"].items():
-            item_oc, item_created = OrdenCompraMateriaPrima.objects.get_or_create(
-                id_orden_compra=oc,
-                id_materia_prima_id=mp_id,
-                defaults={'cantidad': cantidad_necesaria_hoy}
-            )
-            if item_created:
-                print(f"      - NUEVO Item: {cantidad_necesaria_hoy} de MP {mp_id} añadido a OC {oc.id_orden_compra}.")
-            else:
-                item_oc.cantidad = cantidad_necesaria_hoy 
-                item_oc.save()
-                print(f"      - Item existente (MP {mp_id}) en OC {oc.id_orden_compra} ACTUALIZADO a {cantidad_necesaria_hoy}.")
+                item_oc, item_created = OrdenCompraMateriaPrima.objects.get_or_create(
+                    id_orden_compra=oc,
+                    id_materia_prima_id=mp_id,
+                    defaults={'cantidad': cantidad_necesaria_hoy}
+                )
+                
+                if item_created:
+                    print(f"      - NUEVO Item: {cantidad_necesaria_hoy} de MP {mp_id} añadido a OC {oc.id_orden_compra}.")
+                else:
+                    # ✅ CORRECCIÓN AQUÍ: SUMAR en lugar de SO-BRESCRIBIR
+                    cantidad_anterior = item_oc.cantidad
+                    item_oc.cantidad += cantidad_necesaria_hoy 
+                    item_oc.save()
+                    
+                    print(f"      - Item existente (MP {mp_id}) en OC {oc.id_orden_compra} AUMENTADO de {cantidad_anterior} a {item_oc.cantidad}.")
 
     print("\n--- PLANIFICADOR MRP FINALIZADO ---")
