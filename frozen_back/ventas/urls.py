@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import EstadoVentaViewSet, ClienteViewSet, OrdenVentaViewSet, OrdenVentaProductoViewSet, PrioridadViewSet, ReclamoViewSet, SugerenciaViewSet, crear_orden_venta, detalle_orden_venta, cancelar_orden_view, obtener_facturacion, cambiar_estado_orden_venta, HistorialOrdenVentaViewSet, HistorialNotaCreditoViewSet
+from .views import EstadoVentaViewSet, ClienteViewSet, OrdenVentaViewSet, OrdenVentaProductoViewSet, PrioridadViewSet, ReclamoViewSet, SugerenciaViewSet, crear_orden_venta, detalle_orden_venta, cancelar_orden_view, obtener_facturacion, cambiar_estado_orden_venta, HistorialOrdenVentaViewSet, HistorialNotaCreditoViewSet, VerificarFactibilidadVentaView
 from . import views
 
 router = DefaultRouter()
@@ -24,5 +24,8 @@ urlpatterns = [
     path('ordenes/<int:orden_id>/cancelar/', cancelar_orden_view, name='cancelar-orden'),
     path('ordenes_venta/cambiar_estado/', cambiar_estado_orden_venta, name='cambiar_estado_orden_venta'),
     path('', include(router.urls)),
-  
+ 
+   
+    path('verificar-factibilidad/', VerificarFactibilidadVentaView.as_view(), name='verificar-factibilidad'),
+
 ]

@@ -31,6 +31,12 @@ from .serializers import (
     HistoricalNotaCreditoSerializer
 )
 
+
+
+from rest_framework.views import APIView
+from datetime import datetime
+from .services import calcular_fecha_estimada_entrega
+
 class EstadoVentaViewSet(viewsets.ModelViewSet):
     queryset = EstadoVenta.objects.all()
     serializer_class = EstadoVentaSerializer
@@ -561,7 +567,48 @@ class HistorialNotaCreditoViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 
+class VerificarFactibilidadVentaView(APIView):
+    def post(self, request):
+        """
+        Recibe: { "producto_id": 1, "cantidad": 200, "fecha_solicitada": "2025-11-18" }
+        Devuelve: { "posible": false, "fecha_sugerida": "2025-11-21", "mensaje": "..." }
+        """
+        try:
+            producto_id = request.data.get('producto_id')
+            cantidad = int(request.data.get('cantidad'))
+            fecha_solicitada_str = request.data.get('fecha_solicitada')
+            
+            # Validar inputs
+            if not all([producto_id, cantidad, fecha_solicitada_str]):
+                 return Response({"error": "Faltan datos"}, status=status.HTTP_400_BAD_REQUEST)
 
+            fecha_solicitada = datetime.strptime(fecha_solicitada_str, '%Y-%m-%d').date()
+            
+            # Llamar al servicio de cálculo
+            resultado = calcular_fecha_estimada_entrega(producto_id, cantidad)
+            
+            if "error" in resultado:
+                return Response(resultado, status=status.HTTP_400_BAD_REQUEST)
+            
+            fecha_calculada = resultado['fecha_estimada']
+            es_factible = fecha_calculada <= fecha_solicitada
+            
+            response_data = {
+                "es_factible": es_factible,
+                "fecha_solicitada": fecha_solicitada,
+                "fecha_sugerida": fecha_calculada,
+                "dias_retraso": (fecha_calculada - fecha_solicitada).days if not es_factible else 0,
+                "detalles": resultado.get('detalles', {}),
+                "mensaje": "Stock disponible" if resultado['origen'] == "Stock Existente" else "Requiere Producción"
+            }
+            
+            if not es_factible:
+                response_data["warning"] = f"Imposible cumplir para el {fecha_solicitada}. Fecha más temprana: {fecha_calculada}"
+
+            return Response(response_data, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 
