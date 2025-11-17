@@ -240,7 +240,13 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                     fecha_inicio_por_materiales += timedelta(days=1)
 
                 # 3. Comparar con la fecha actual
-                fecha_inicio_actual = op.fecha_planificada.date()
+                if op.fecha_planificada:
+                    fecha_inicio_actual = op.fecha_planificada.date()
+                else:
+                    # Fallback: Si la OP es 'zombie' o manual sin fecha, asumimos que empieza HOY
+                    # para forzar el cálculo de replanificación si hace falta material.
+                    print(f"      ⚠️ OP {op.id_orden_produccion} no tenía fecha planificada. Asumiendo 'HOY'.")
+                    fecha_inicio_actual = hoy  #------> REVISAR, NO ME GUSTA QUE LA FECHA POR DEFECTO SEA LA ACTUAL, CUANDO CREO UNA OP YA TENGO LA FECHA
 
                 if fecha_inicio_por_materiales > fecha_inicio_actual:
                     print(f"    🚨 ¡RETRASO DETECTADO! OP {op.id_orden_produccion}")
@@ -836,6 +842,7 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                 fecha_a_buscar += timedelta(days=1)
 
             fecha_inicio_real_asignada = None
+            ultimo_dia_trabajado = None
             fecha_fin_real_asignada = None
             reservas_a_crear_bulk = []
             
@@ -897,6 +904,8 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                 if se_reservo_tiempo_en_fecha:
                     horas_pendientes -= horas_a_reservar_hoy 
                 
+                    ultimo_dia_trabajado = fecha_a_buscar
+
                     if fecha_inicio_real_asignada is None:
                         fecha_inicio_real_asignada = fecha_a_buscar
                     
@@ -924,7 +933,8 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
             
             # La fecha fin es el último día que se usó con éxito
             # Como el bucle avanza 'fecha_a_buscar' al final, debemos retroceder uno.
-            fecha_fin_real_asignada = fecha_a_buscar - timedelta(days=1)
+           # fecha_fin_real_asignada = fecha_a_buscar - timedelta(days=1)
+            fecha_fin_real_asignada = ultimo_dia_trabajado if ultimo_dia_trabajado else fecha_inicio_real_asignada
             while fecha_fin_real_asignada.weekday() >= 5: # Ajuste por si acaso retrocedió a finde
                  fecha_fin_real_asignada -= timedelta(days=1)
 
