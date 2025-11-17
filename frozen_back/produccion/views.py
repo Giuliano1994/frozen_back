@@ -6,6 +6,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from django.db import transaction
 from produccion.services import descontar_stock_reservado, calcular_porcentaje_desperdicio_historico, verificar_y_actualizar_op_segun_ots
 from productos.models import Producto
+from ventas.models import OrdenVenta, EstadoVenta
 from .models import EstadoOrdenProduccion, EstadoOrdenTrabajo, LineaProduccion, OrdenProduccion, NoConformidad, PausaOT, TipoNoConformidad, estado_linea_produccion, OrdenDeTrabajo, CalendarioProduccion, OrdenProduccionPegging
 from stock.models import LoteProduccion, EstadoLoteProduccion, EstadoReservaMateria, ReservaMateriaPrima
 from .serializers import (
