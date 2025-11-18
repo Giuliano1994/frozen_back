@@ -26,7 +26,10 @@ class RecetaMateriaPrimaSerializer(serializers.ModelSerializer):
 # Serializer ProductoLinea
 # ------------------------------
 class ProductoLineaSerializer(serializers.ModelSerializer):
+    # Opcional: Para ver el nombre de la línea en lugar de solo el ID al listar
+    nombre_linea = serializers.CharField(source='id_linea_produccion.descripcion', read_only=True)
+    
     class Meta:
         model = ProductoLinea
-        fields = "__all__"
-        
+        fields = '__all__' 
+       
