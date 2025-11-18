@@ -20,21 +20,28 @@ from produccion.models import OrdenDeTrabajo, OrdenProduccion, NoConformidad
 
 
 
+from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import Q
+
+# Asegúrate de importar los modelos necesarios
+from ventas.models import OrdenVenta, OrdenVentaProducto
+from produccion.models import OrdenProduccion, OrdenProduccionPegging, OrdenDeTrabajo
+from stock.models import ReservaStock, ReservaMateriaPrima, LoteProduccionMateria, LoteProduccion, LoteMateriaPrima
+
 def get_traceability_for_order(id_orden_venta):
     """
-    Realiza la trazabilidad HACIA ATRÁS (Venta -> PT Lote -> MP Lote -> Proveedor).
+    Realiza la trazabilidad HACIA ATRÁS para una Orden de Venta.
     
-    1. Venta (OrdenVenta)
-    2. PT Lote (LoteProduccion): Usando ReservaStock.
-    3. OP (OrdenProduccion): Usando LoteProduccion.
-    4. MP Lote (LoteMateriaPrima): Usando LoteProduccionMateria.
-    5. Proveedor (MateriaPrima.id_proveedor).
+    Ahora es HÍBRIDA:
+    1. Busca Stock Físico asignado (ReservaStock).
+    2. Busca Producción en Curso asignada (OrdenProduccionPegging - MTO).
     """
     try:
         orden = OrdenVenta.objects.select_related('id_cliente').get(pk=id_orden_venta)
         full_report = {
             'id_orden_venta': orden.id_orden_venta,
             'cliente': {'id_cliente': orden.id_cliente.id_cliente, 'nombre': orden.id_cliente.nombre},
+            'fecha_entrega': orden.fecha_entrega,
             'productos_trazados': []
         }
 
@@ -45,38 +52,46 @@ def get_traceability_for_order(id_orden_venta):
             producto_report = {
                 'producto': linea.id_producto.nombre if linea.id_producto else 'Desconocido',
                 'cantidad_vendida': linea.cantidad,
-                'lotes_entregados': [],
-                'total_trazado': 0
+                'origen': [] # Lista mixta (Stock o Producción)
             }
             
-            # Buscar el Lote de Producción (PT) que satisfizo esta línea de venta a través de la ReservaStock
-            reservas_entregadas = ReservaStock.objects.filter(
-                id_orden_venta_producto=linea,
-                # CRÍTICO: Asumo que 'Activa' representa stock usado o 'Entregado'. 
-                # Si usas otro estado para el consumo final, cámbialo aquí.
-                id_estado_reserva__descripcion='Activa' 
-            ).select_related(
-                'id_lote_produccion', 
-                'id_lote_produccion__id_producto'
-            )
+            # A. BUSCAR EN STOCK (Ya reservado/Entregado)
+            reservas_stock = ReservaStock.objects.filter(
+                id_orden_venta_producto=linea
+            ).select_related('id_lote_produccion')
 
-            for reserva in reservas_entregadas:
-                lote_prod = reserva.id_lote_produccion
+            for res in reservas_stock:
+                lote = res.id_lote_produccion
+                producto_report['origen'].append({
+                    'tipo': 'STOCK_EXISTENTE',
+                    'id_lote_pt': lote.id_lote_produccion,
+                    'cantidad': res.cantidad_reservada,
+                    'estado_reserva': res.id_estado_reserva.descripcion,
+                    'fecha_vencimiento': lote.fecha_vencimiento,
+                    # Trazamos la MP de este lote
+                    'composicion_mp': get_mp_trace_for_lote(lote.id_lote_produccion)
+                })
+
+            # B. BUSCAR EN PRODUCCIÓN (MTO / Pegging)
+            # Esto es nuevo con tu planificador: La OV está vinculada directamente a una OP
+            peggings = OrdenProduccionPegging.objects.filter(
+                id_orden_venta_producto=linea
+            ).select_related('id_orden_produccion', 'id_orden_produccion__id_lote_produccion')
+
+            for peg in peggings:
+                op = peg.id_orden_produccion
+                lote_pt_id = op.id_lote_produccion.id_lote_produccion if op.id_lote_produccion else None
                 
-                # Obtener la Orden de Producción asociada al Lote de Producción
-                op_asociada = OrdenProduccion.objects.filter(id_lote_produccion=lote_prod).first()
-                op_id = op_asociada.id_orden_produccion if op_asociada else 'N/A'
-
-                lote_data = {
-                    'id_lote_produccion': lote_prod.id_lote_produccion,
-                    'cantidad_reservada': reserva.cantidad_reservada,
-                    'fecha_produccion': lote_prod.fecha_produccion.isoformat(),
-                    'fecha_vencimiento': lote_prod.fecha_vencimiento.isoformat(),
-                    'orden_produccion_id': op_id,
-                    'materias_primas_usadas': get_mp_trace_for_lote(lote_prod.id_lote_produccion)
-                }
-                producto_report['lotes_entregados'].append(lote_data)
-                producto_report['total_trazado'] += reserva.cantidad_reservada
+                producto_report['origen'].append({
+                    'tipo': 'PRODUCCION_EN_CURSO (MTO)',
+                    'id_orden_produccion': op.id_orden_produccion,
+                    'estado_op': op.id_estado_orden_produccion.descripcion,
+                    'id_lote_pt_proyectado': lote_pt_id,
+                    'cantidad_asignada': peg.cantidad_asignada,
+                    'fecha_planificada': op.fecha_planificada,
+                    # Trazamos la MP reservada para esta OP
+                    'composicion_mp': get_mp_trace_for_op(op.id_orden_produccion)
+                })
 
             full_report['productos_trazados'].append(producto_report)
             
@@ -90,192 +105,183 @@ def get_traceability_for_order(id_orden_venta):
 
 def get_mp_trace_for_lote(id_lote_produccion):
     """
-    Función auxiliar para obtener la trazabilidad de MP (Lote -> Materia Prima -> Proveedor)
-    para un Lote de Producción específico.
+    Obtiene MP usada para un Lote YA CREADO.
+    Intenta buscar primero por la OP asociada al lote y sus reservas.
     """
     mp_data = []
     try:
-        # Obtenemos los vínculos entre Lote de PT y Lote de MP
-        materias_usadas = LoteProduccionMateria.objects.filter(
-            id_lote_produccion=id_lote_produccion
+        # 1. Buscamos la OP que generó este lote
+        op = OrdenProduccion.objects.filter(id_lote_produccion_id=id_lote_produccion).first()
+        
+        if op:
+            return get_mp_trace_for_op(op.id_orden_produccion)
+        else:
+            # Fallback: Si no hay OP (carga de stock manual), buscamos en tabla histórica si existe
+            # (Si usas LoteProduccionMateria para históricos)
+            links = LoteProduccionMateria.objects.filter(id_lote_produccion_id=id_lote_produccion)
+            for link in links:
+                mp_data.append({
+                    'fuente': 'HISTORICO',
+                    'materia_prima': link.id_lote_materia_prima.id_materia_prima.nombre,
+                    'lote_mp': link.id_lote_materia_prima.id_lote_materia_prima,
+                    'proveedor': link.id_lote_materia_prima.id_materia_prima.id_proveedor.nombre,
+                    'cantidad': link.cantidad_usada
+                })
+    except Exception as e:
+        mp_data.append({'error': str(e)})
+    return mp_data
+
+
+def get_mp_trace_for_op(id_orden_produccion):
+    """
+    Obtiene la MP reservada/usada para una Orden de Producción.
+    Esta es la función clave para tu nuevo planificador.
+    """
+    mp_data = []
+    try:
+        reservas_mp = ReservaMateriaPrima.objects.filter(
+            id_orden_produccion_id=id_orden_produccion
         ).select_related(
-            'id_lote_materia_prima',
+            'id_lote_materia_prima', 
             'id_lote_materia_prima__id_materia_prima',
             'id_lote_materia_prima__id_materia_prima__id_proveedor'
         )
 
-        for mp_link in materias_usadas:
-            lote_mp = mp_link.id_lote_materia_prima
-            materia_prima = lote_mp.id_materia_prima
-            proveedor = materia_prima.id_proveedor
+        for res in reservas_mp:
+            lote_mp = res.id_lote_materia_prima
+            mp = lote_mp.id_materia_prima
             
             mp_data.append({
-                'id_lote_materia_prima': lote_mp.id_lote_materia_prima,
-                'nombre_materia_prima': materia_prima.nombre,
-                'cantidad_usada': mp_link.cantidad_usada,
-                'proveedor': {'id_proveedor': proveedor.id_proveedor, 'nombre': proveedor.nombre}
+                'materia_prima': mp.nombre,
+                'id_lote_mp': lote_mp.id_lote_materia_prima,
+                'proveedor': mp.id_proveedor.nombre,
+                'cantidad_reservada': res.cantidad_reservada,
+                'estado_reserva': res.id_estado_reserva_materia.descripcion,
+                'vencimiento_mp': lote_mp.fecha_vencimiento
             })
     except Exception as e:
-        mp_data.append({'error': f"Error al buscar MP para Lote PT {id_lote_produccion}: {str(e)}"})
-        
+        mp_data.append({'error': str(e)})
     return mp_data
+
 
 def get_traceability_forward(id_lote_materia_prima):
     """
-    Realiza la trazabilidad HACIA ADELANTE (MP Lote -> PT Lote -> Cliente).
-    
-    1. Lote MP (LoteMateriaPrima).
-    2. PT Lote (LoteProduccion): Usando LoteProduccionMateria.
-    3. Clientes (OrdenVenta): Usando ReservaStock.
+    Realiza la trazabilidad HACIA ADELANTE (MP Lote -> OP -> PT -> Cliente).
+    Detecta si la MP está en una OP que va dedicada a un Cliente (Pegging).
     """
     report = {}
     try:
-        # 1. PUNTO DE PARTIDA: El lote de materia prima
         lote_mp = LoteMateriaPrima.objects.select_related(
             'id_materia_prima__id_proveedor'
         ).get(pk=id_lote_materia_prima)
 
-        report['consulta'] = {
-            'tipo': 'Trazabilidad Hacia Adelante',
-            'id_lote_materia_prima': lote_mp.id_lote_materia_prima,
-        }
         report['lote_materia_prima'] = {
+            'id': lote_mp.id_lote_materia_prima,
             'nombre': lote_mp.id_materia_prima.nombre,
-            'fecha_vencimiento': lote_mp.fecha_vencimiento.isoformat(),
+            'proveedor': lote_mp.id_materia_prima.id_proveedor.nombre,
+            'fecha_ingreso': lote_mp.fecha_produccion # Asumiendo fecha prod como ingreso
         }
-        report['proveedor'] = {
-            'id_proveedor': lote_mp.id_materia_prima.id_proveedor.id_proveedor,
-            'nombre': lote_mp.id_materia_prima.id_proveedor.nombre,
-        }
+        report['uso_en_produccion'] = []
 
-        # 2. LOTES DE PRODUCCIÓN AFECTADOS
-        lotes_prod_links = LoteProduccionMateria.objects.filter(
+        # 1. Buscar en qué OPs está reservada/usada esta MP
+        reservas_mp = ReservaMateriaPrima.objects.filter(
             id_lote_materia_prima=lote_mp
         ).select_related(
-            'id_lote_produccion',
-            'id_lote_produccion__id_producto'
+            'id_orden_produccion', 
+            'id_orden_produccion__id_producto',
+            'id_orden_produccion__id_lote_produccion'
         )
 
-        lotes_afectados_data = []
-        for link in lotes_prod_links:
-            lote_prod = link.id_lote_produccion
-            lote_data = {
-                'id_lote_produccion': lote_prod.id_lote_produccion,
-                'producto_nombre': lote_prod.id_producto.nombre,
-                'fecha_produccion': lote_prod.fecha_produccion.isoformat(),
-                'fecha_vencimiento': lote_prod.fecha_vencimiento.isoformat(),
-                'cantidad_usada_en_lote': link.cantidad_usada,
-                'clientes_afectados': []
+        for res in reservas_mp:
+            op = res.id_orden_produccion
+            uso_data = {
+                'id_orden_produccion': op.id_orden_produccion,
+                'producto_final': op.id_producto.nombre,
+                'cantidad_mp_usada': res.cantidad_reservada,
+                'estado_op': op.id_estado_orden_produccion.descripcion,
+                'lote_pt_generado': op.id_lote_produccion.id_lote_produccion if op.id_lote_produccion else 'Pendiente',
+                'destinos_finales': []
             }
 
-            # 3. CLIENTES AFECTADOS
-            # Buscamos todas las reservas activas (o el estado que representa la entrega final)
-            reservas = ReservaStock.objects.filter(
-                id_lote_produccion=lote_prod,
-                # CRÍTICO: Asumo que 'Activa' o 'Entregada' representan la entrega al cliente.
-                id_estado_reserva__descripcion__in=['Activa', 'Entregada'] 
-            ).select_related(
-                'id_orden_venta_producto__id_orden_venta',
-                'id_orden_venta_producto__id_orden_venta__id_cliente'
-            )
+            # 2. A. Verificar si esta OP tiene PEGGING (Destino directo MTO)
+            peggings = OrdenProduccionPegging.objects.filter(
+                id_orden_produccion=op
+            ).select_related('id_orden_venta_producto__id_orden_venta__id_cliente')
 
-            clientes_data = []
-            for reserva in reservas:
-                orden = reserva.id_orden_venta_producto.id_orden_venta
-                cliente = orden.id_cliente
-                
-                clientes_data.append({
-                    'id_cliente': cliente.id_cliente,
-                    'nombre_cliente': cliente.nombre,
-                    'id_orden_venta': orden.id_orden_venta,
-                    'fecha_orden': orden.fecha.isoformat(),
-                    'cantidad_entregada_por_lote': reserva.cantidad_reservada
+            for peg in peggings:
+                ov = peg.id_orden_venta_producto.id_orden_venta
+                uso_data['destinos_finales'].append({
+                    'tipo': 'PEDIDO_DIRECTO (MTO)',
+                    'cliente': ov.id_cliente.nombre,
+                    'orden_venta': ov.id_orden_venta,
+                    'cantidad_asignada': peg.cantidad_asignada
                 })
-            
-            lote_data['clientes_afectados'] = clientes_data
-            lotes_afectados_data.append(lote_data)
 
-        report['lotes_produccion_afectados'] = lotes_afectados_data
+            # 2. B. Verificar si el Lote PT generado ya fue reservado (Destino MTS o stock final)
+            if op.id_lote_produccion:
+                reservas_pt = ReservaStock.objects.filter(
+                    id_lote_produccion=op.id_lote_produccion
+                ).select_related('id_orden_venta_producto__id_orden_venta__id_cliente')
+                
+                for res_pt in reservas_pt:
+                    ov = res_pt.id_orden_venta_producto.id_orden_venta
+                    uso_data['destinos_finales'].append({
+                        'tipo': 'DESPACHO_STOCK (MTS)',
+                        'cliente': ov.id_cliente.nombre,
+                        'orden_venta': ov.id_orden_venta,
+                        'cantidad_entregada': res_pt.cantidad_reservada
+                    })
+
+            report['uso_en_produccion'].append(uso_data)
+
         return report
 
     except ObjectDoesNotExist:
         return {"error": f"No se encontró el lote de materia prima con ID {id_lote_materia_prima}"}
     except Exception as e:
-        return {"error": f"Error inesperado en trazabilidad hacia adelante: {str(e)}"}
-    
+        return {"error": f"Error en trazabilidad hacia adelante: {str(e)}"}
+
 
 def get_traceability_backward_op(id_orden_produccion):
-    
     """
-    Rastrea hacia atrás desde una Orden de Producción (OP) específica,
-    incluyendo las Órdenes de Trabajo (OT) y las No Conformidades.
+    Rastrea una OP específica. 
+    Muestra para QUIÉN se está haciendo (Pegging) y QUÉ está consumiendo (MP).
     """
-    
     op_report = {}
     try:
-        # 1. PUNTO DE PARTIDA: La Orden de Producción
         orden_produccion = OrdenProduccion.objects.select_related(
-            'id_supervisor', 
-            'id_operario',
-            'id_lote_produccion'
+            'id_producto', 'id_estado_orden_produccion'
         ).get(pk=id_orden_produccion)
 
-        lote = orden_produccion.id_lote_produccion
-
         op_report['orden_produccion'] = {
-            'id_orden_produccion': orden_produccion.id_orden_produccion,
-            'fecha_creacion': orden_produccion.fecha_creacion.isoformat(),
-            'cantidad_planificada': orden_produccion.cantidad,
-            'lote_asociado': lote.id_lote_produccion if lote else 'N/A',
-            'operarios': [
-                {'rol': 'Supervisor', 'nombre': orden_produccion.id_supervisor.nombre if orden_produccion.id_supervisor else 'N/A'},
-                {'rol': 'Operario', 'nombre': orden_produccion.id_operario.nombre if orden_produccion.id_operario else 'N/A'},
-            ],
-            'ordenes_de_trabajo': [] 
+            'id': orden_produccion.id_orden_produccion,
+            'producto': orden_produccion.id_producto.nombre,
+            'cantidad': orden_produccion.cantidad,
+            'estado': orden_produccion.id_estado_orden_produccion.descripcion,
+            'fecha_planificada': orden_produccion.fecha_planificada
         }
 
-        # 2. ORDENES DE TRABAJO (OT) y No Conformidades
-        ordenes_trabajo = OrdenDeTrabajo.objects.filter(
+        # 1. ¿Para quién es esta OP? (Pegging)
+        peggings = OrdenProduccionPegging.objects.filter(
             id_orden_produccion=orden_produccion
-        ).select_related(
-            'id_linea_produccion', 
-            'id_estado_orden_trabajo'
-        ).prefetch_related(
-            'no_conformidades__id_tipo_no_conformidad'
-        )
-        
-        if ordenes_trabajo.exists():
-            for ot in ordenes_trabajo:
-                total_desperdiciado = sum(nc.cant_desperdiciada for nc in ot.no_conformidades.all())
-                ot_data = {
-                    'id_orden_trabajo': ot.id_orden_trabajo,
-                    'linea_produccion': ot.id_linea_produccion.descripcion,
-                    'estado': ot.id_estado_orden_trabajo.descripcion if ot.id_estado_orden_trabajo else 'N/A',
-                    'cantidad_producida_neta': ot.cantidad_producida,
-                    'cantidad_desperdiciada_total': total_desperdiciado,
-                    'inicio_real': ot.hora_inicio_real.isoformat() if ot.hora_inicio_real else 'N/A',
-                    'fin_real': ot.hora_fin_real.isoformat() if ot.hora_fin_real else 'N/A',
-                    'no_conformidades_detalles': [
-                        {
-                            'tipo': nc.id_tipo_no_conformidad.nombre,
-                            'cantidad': nc.cant_desperdiciada
-                        } 
-                        for nc in ot.no_conformidades.all()
-                    ]
-                }
-                op_report['orden_produccion']['ordenes_de_trabajo'].append(ot_data)
-        else:
-            op_report['orden_produccion']['ordenes_de_trabajo'] = [{'info': 'No se encontraron Órdenes de Trabajo asociadas a esta OP.'}]
+        ).select_related('id_orden_venta_producto__id_orden_venta__id_cliente')
 
-        # 3. MATERIAS PRIMAS (tomadas del Lote de PT asociado)
-        if lote:
-            op_report['materias_primas_usadas'] = get_mp_trace_for_lote(lote.id_lote_produccion)
+        op_report['destino_cliente'] = []
+        if peggings.exists():
+            for peg in peggings:
+                ov = peg.id_orden_venta_producto.id_orden_venta
+                op_report['destino_cliente'].append({
+                    'cliente': ov.id_cliente.nombre,
+                    'orden_venta': ov.id_orden_venta,
+                    'cantidad_asignada': peg.cantidad_asignada
+                })
         else:
-            op_report['materias_primas_usadas'] = []
+            op_report['destino_cliente'].append("Stock General (Sin pedido vinculado)")
+
+        # 2. ¿Qué está consumiendo? (MP)
+        op_report['materias_primas'] = get_mp_trace_for_op(id_orden_produccion)
         
         return op_report
 
     except ObjectDoesNotExist:
-        return {"error": f"No se encontró la Orden de Producción con ID {id_orden_produccion}"}
-    except Exception as e:
-        return {"error": f"Error inesperado al rastrear la OP {id_orden_produccion}: {str(e)}"}
+        return {"error": f"No se encontró la Orden de Producción {id_orden_produccion}"}

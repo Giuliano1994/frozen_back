@@ -487,7 +487,7 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
     print("\n[PASO 1-3/6] Identificando demandas netas y JIT...")
 
     estados_ov_activos = [estado_ov_creada, estado_ov_en_preparacion]
-    
+
     lineas_ov_pendientes = OrdenVentaProducto.objects.filter(
         id_orden_venta__id_estado_venta__in=estados_ov_activos,
         id_orden_venta__fecha_entrega__range=[hoy, fecha_limite_ov],
@@ -502,6 +502,7 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
     }
 
     lineas_para_producir = [] 
+    ovs_completamente_reservadas = set()  # 🆕 Track OVs completamente cubiertas
 
     for linea_ov in lineas_ov_pendientes:
         ov = linea_ov.id_orden_venta
@@ -521,15 +522,44 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
             else:
                 _reservar_stock_pt(linea_ov, tomar_de_stock, estado_reserva_activa)
 
+        # 🆕 VERIFICAR SI LA OV ESTÁ COMPLETAMENTE CUBIERTA
+        if cantidad_para_producir <= 0:
+            # Esta línea está completamente cubierta por stock
+            ovs_completamente_reservadas.add(ov.id_orden_venta)
+            print(f"   ✅ Línea {linea_ov.id_orden_venta_producto} completamente reservada con stock existente")
+
         if cantidad_para_producir > 0:
             print(f"   > OV {ov.id_orden_venta} (Línea {linea_ov.id_orden_venta_producto}) necesita PRODUCIR {cantidad_para_producir} de {linea_ov.id_producto.nombre}")
             lineas_para_producir.append((linea_ov, cantidad_para_producir))
             if ov.id_estado_venta != estado_ov_en_preparacion:
                 ov.id_estado_venta = estado_ov_en_preparacion
                 ov.save(update_fields=['id_estado_venta'])
+
+    # 🆕 ACTUALIZAR OVs COMPLETAMENTE CUBIERTAS A "PENDIENTE DE PAGO"
+    print(f"\n[PASO 1.5] Actualizando OVs completamente cubiertas por stock...")
+    for ov_id in ovs_completamente_reservadas:
+        ov = OrdenVenta.objects.get(id_orden_venta=ov_id)
         
-        elif tomar_de_stock >= linea_ov.cantidad:
-             pass
+        # Verificar que TODAS las líneas de esta OV estén completamente reservadas
+        lineas_ov = OrdenVentaProducto.objects.filter(id_orden_venta=ov)
+        todas_completas = True
+        
+        for linea in lineas_ov:
+            reservas_actuales = ReservaStock.objects.filter(
+                id_orden_venta_producto=linea,
+                id_estado_reserva=estado_reserva_activa
+            ).aggregate(total=Sum('cantidad_reservada'))['total'] or 0
+            
+            if reservas_actuales < linea.cantidad:
+                todas_completas = False
+                break
+        
+        if todas_completas and ov.id_estado_venta != estado_ov_pendiente_pago:
+            ov.id_estado_venta = estado_ov_pendiente_pago
+            ov.save(update_fields=['id_estado_venta'])
+            print(f"   ✅ OV {ov.id_orden_venta} actualizada a 'Pendiente de Pago' (completamente cubierta por stock)")
+        elif not todas_completas:
+            print(f"   ⚠️ OV {ov.id_orden_venta} tiene stock parcial, pero no todas las líneas están completas")
 
 
     # ===================================================================
