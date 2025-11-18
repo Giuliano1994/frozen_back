@@ -90,13 +90,14 @@ class LineasProduccionPorProductoView(APIView):
 class ActualizarCapacidadLineaView(APIView):
     """
     Permite modificar cant_por_hora y cantidad_minima buscando por
-    Producto + Línea (sin necesitar el ID primario de la relación).
+    Producto + Línea.
+    Valida que cantidad_minima < cant_por_hora.
     """
     def post(self, request):
         id_producto = request.data.get("id_producto")
         id_linea = request.data.get("id_linea_produccion")
         
-        # Valores a actualizar
+        # Valores a actualizar (pueden ser None si no se envían)
         nueva_cant = request.data.get("cant_por_hora")
         nueva_minima = request.data.get("cantidad_minima")
 
@@ -106,7 +107,7 @@ class ActualizarCapacidadLineaView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Buscar la relación existente
+        # 1. Buscar la relación existente en la BD
         try:
             relacion = ProductoLinea.objects.get(
                 id_producto=id_producto, 
@@ -118,7 +119,25 @@ class ActualizarCapacidadLineaView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Actualizar solo si se enviaron los datos
+        # 2. Determinar los VALORES FINALES para la validación
+        # Si mandaron un valor nuevo, usamos ese. Si no, usamos el que ya está en la BD.
+        val_cant_final = nueva_cant if nueva_cant is not None else relacion.cant_por_hora
+        val_minima_final = nueva_minima if nueva_minima is not None else relacion.cantidad_minima
+
+        # 3. VALIDACIÓN DE LÓGICA (Mínimo < Máximo/Hora)
+        # Solo validamos si ambos valores existen (no son nulos)
+        if val_cant_final is not None and val_minima_final is not None:
+            # Convertimos a int por seguridad, por si vienen como strings en el JSON
+            if int(val_minima_final) >= int(val_cant_final):
+                return Response(
+                    {
+                        "error": "Validación fallida: La cantidad mínima no puede ser mayor o igual a la capacidad por hora.",
+                        "detalle": f"Mínimo ({val_minima_final}) >= Capacidad ({val_cant_final})"
+                    }, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # 4. Guardar cambios (Solo si pasó la validación)
         if nueva_cant is not None:
             relacion.cant_por_hora = nueva_cant
         
