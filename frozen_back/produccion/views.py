@@ -487,7 +487,7 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
             pass # No hacer nada aquí, solo permitir la llamada si ya estaba finalizada
 
         # --- 🔹 CASO 2: ORDEN CANCELADA ---
-        elif estado_descripcion == 'cancelada':
+        elif estado_descripcion == 'cancelado':
             # (Esta lógica parece correcta y no necesita cambios para el desperdicio)
             if orden.id_lote_produccion:
                 try:
@@ -549,64 +549,60 @@ class OrdenProduccionViewSet(viewsets.ModelViewSet):
             except EstadoOrdenTrabajo.DoesNotExist:
                 print(f"Advertencia: No se pudo encontrar el estado 'Cancelada' para OrdenDeTrabajo.")
 
-            # ⬇️ --- INICIO: LIBERAR HORAS DEL CALENDARIO --- ⬇️
-            print(f"Iniciando liberación de calendario para OP {orden.id_orden_produccion}...")
+            print(f"Iniciando limpieza completa para OP cancelada {orden.id_orden_produccion}...")
+
+            # 1. LIBERAR HORAS DEL CALENDARIO
             try:
-                # Buscar todas las reservas de calendario para esta OP
                 reservas_calendario = CalendarioProduccion.objects.filter(id_orden_produccion=orden)
                 count_reservas = reservas_calendario.count()
                 
                 if count_reservas > 0:
-                    # Borrarlas
                     reservas_calendario.delete()
                     print(f"✅ Liberadas {count_reservas} reservas del CalendarioProduccion.")
                 else:
-                    print(f"No se encontraron reservas de calendario para la OP {orden.id_orden_produccion}.")
+                    print("No se encontraron reservas de calendario.")
+            except Exception as e:
+                print(f"⚠️ ADVERTENCIA: Error al borrar reservas de calendario: {str(e)}")
+
+            
+            # 2. BORRAR PEGGING Y RESETEAR OVs VINCULADAS
+            try:
+                # Buscar todos los 'pegs' (vínculos) de esta OP
+                peggings = OrdenProduccionPegging.objects.filter(id_orden_produccion=orden)
+                
+                if peggings.exists():
+                    # A. Obtener los IDs de las OVs padres ANTES de borrar los pegs
+                    ov_ids_a_resetear = list(peggings.values_list(
+                        'id_orden_venta_producto__id_orden_venta_id', 
+                        flat=True
+                    ).distinct())
+                    
+                    # B. Borrar los 'pegs'
+                    count_pegs_borrados, _ = peggings.delete()
+                    print(f"✅ {count_pegs_borrados} vínculos de 'OrdenProduccionPegging' eliminados.")
+
+                    # C. Resetear las OVs (si encontramos un estado 'Creada')
+                    try:
+                        estado_ov_creada = EstadoVenta.objects.get(descripcion__iexact="Creada")
+                        
+                        if ov_ids_a_resetear:
+                            ovs_actualizadas = OrdenVenta.objects.filter(
+                                id_orden_venta__in=ov_ids_a_resetear
+                            ).update(id_estado_venta=estado_ov_creada)
+                            
+                            print(f"✅ {ovs_actualizadas} Órdenes de Venta (OVs) reseteadas a 'Creada'.")
+                        
+                    except EstadoVenta.DoesNotExist:
+                        print("⚠️ ADVERTENCIA: No se encontró el estado 'Creada' de OrdenVenta. No se pudieron resetear las OVs.")
+                
+                else:
+                    # Esto es normal para OPs creadas manualmente (MTS)
+                    print(f"No se encontraron vínculos de pegging (MTO) para esta OP.")
             
             except Exception as e:
-                # No frenar la cancelación, pero sí advertir
-                print(f"⚠️ ADVERTENCIA: Ocurrió un error al borrar las reservas de calendario: {str(e)}")
-            # ⬆️ --- FIN: LIBERAR HORAS DEL CALENDARIO --- ⬆️
-
-            # ⬇️ --- INICIO DE LA NUEVA LÓGICA --- ⬇️
-            # 
-            # REESTABLECER EL ESTADO DE LAS ÓRDENES DE VENTA (OVs) VINCULADAS
+                print(f"⚠️ ADVERTENCIA: Error al procesar el pegging y las OVs: {str(e)}")
             
-            print(f"Iniciando reseteo de OVs para OP cancelada {orden.id_orden_produccion}...")
-            try:
-                # 1. Obtener el estado "Creada" de la OV
-                estado_ov_creada = EstadoVenta.objects.get(descripcion__iexact="Creada")
-            
-            except EstadoVenta.DoesNotExist:
-                # No frenamos la cancelación de la OP, pero sí advertimos.
-                print("⚠️ ADVERTENCIA: No se encontró el estado 'Creada' de OrdenVenta. No se pudieron resetear las OVs.")
-                # Si esto es crítico, deberías lanzar un error:
-                # raise ValidationError("No se encontró el estado 'Creada' para OrdenVenta.")
-                
-            else: # Si encontramos el estado 'Creada', continuamos
-                
-                # 2. Buscar todas las OVs vinculadas a esta OP a través de la tabla Pegging
-                # Obtenemos los IDs únicos de las OVs (no de las líneas de OV)
-                ov_ids_a_resetear = OrdenProduccionPegging.objects.filter(
-                    id_orden_produccion=orden
-                ).values_list(
-                    'id_orden_venta_producto__id_orden_venta_id', # Navegamos: Pegging -> LineaOV -> OV
-                    flat=True
-                ).distinct()
-
-                if ov_ids_a_resetear:
-                    # 3. Actualizar todas esas OVs al estado "Creada"
-                    # Usamos list() para ejecutar la subconsulta
-                    ovs_actualizadas = OrdenVenta.objects.filter(
-                        id_orden_venta__in=list(ov_ids_a_resetear)
-                    ).update(id_estado_venta=estado_ov_creada)
-                    
-                    print(f"✅ {ovs_actualizadas} Órdenes de Venta (OVs) fueron reseteadas a 'Creada'.")
-                else:
-                    # Esto puede pasar si la OP fue creada manualmente sin pegging
-                    print(f"No se encontraron OVs vinculadas (vía Pegging) a la OP {orden.id_orden_produccion}.")
-            
-            # ⬆️ --- FIN DE LA NUEVA LÓGICA --- ⬆️
+            # ⬆️ --- FIN DE LA LIMPIEZA --- ⬆️
 
         # --- 🔹 CASO 3: ORDEN PENDIENTE DE INICIO ---
         elif estado_descripcion == 'pendiente de inicio':
