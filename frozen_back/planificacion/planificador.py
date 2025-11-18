@@ -494,7 +494,7 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
         ops_vinculadas__isnull=True
     ).select_related(
         'id_orden_venta', 'id_producto'
-    ).order_by('id_orden_venta__fecha_entrega', 'id_orden_venta__id_prioridad__id_prioridad')
+    ).order_by('id_orden_venta__fecha_entrega', '-id_orden_venta__id_prioridad__id_prioridad')
 
     stock_virtual_pt = {
         p_id: get_stock_disponible_para_producto(p_id)
