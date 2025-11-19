@@ -3,7 +3,7 @@ from .models import OrdenVentaProducto, EstadoVenta, OrdenVenta, Factura, NotaCr
 from stock.models import LoteProduccion, ReservaStock, EstadoLoteProduccion, EstadoReserva 
 from stock.services import verificar_stock_y_enviar_alerta
 from stock.models import ReservaStock
-from django.db.models import Sum, F, Q
+from django.db.models import Sum, F, Q, ExpressionWrapper, FloatField
 from collections import defaultdict
 from datetime import date, timedelta
 from django.utils import timezone
@@ -360,26 +360,31 @@ def _reservar_stock_inmediato(linea_ov: OrdenVentaProducto, estado_activa: Estad
     """
     cantidad_necesaria = linea_ov.cantidad
     
-    # Filtro de lotes disponibles (Logica idéntica a tu snippet original)
     filtro_reservas_activas = Q(reservas__id_estado_reserva__descripcion='Activa')
     
     lotes_disponibles = LoteProduccion.objects.filter(
         id_producto=linea_ov.id_producto,
         id_estado_lote_produccion__descripcion="Disponible"
     ).annotate(
-        total_reservado=Coalesce(Sum('reservas__cantidad_reservada', filter=filtro_reservas_activas), 0.0)
+        total_reservado=Coalesce(Sum('reservas__cantidad_reservada', filter=filtro_reservas_activas), 0)
     ).annotate(
-        disponible_real=F('cantidad') - F('total_reservado')
+        # --- CORRECCIÓN AQUÍ ---
+        # Usamos ExpressionWrapper para manejar la resta entre Entero y Flotante
+        disponible_real=ExpressionWrapper(
+            F('cantidad') - F('total_reservado'),
+            output_field=FloatField()
+        )
     ).filter(
         disponible_real__gt=0
-    ).order_by('fecha_vencimiento') # FIFO / FEFO
+    ).order_by('fecha_vencimiento')
 
     # Verificamos si hay suficiente stock TOTAL antes de empezar a reservar
     total_existente = sum(l.disponible_real for l in lotes_disponibles)
+    
+    # Nota: Al comparar floats, es bueno tener cuidado, pero para stock suele funcionar directo
     if total_existente < cantidad_necesaria:
-        return False # No hay suficiente stock para cubrir la línea completa
+        return False 
 
-    # Si hay suficiente, procedemos a reservar lote por lote
     cantidad_pendiente = cantidad_necesaria
     
     for lote in lotes_disponibles:
@@ -395,4 +400,6 @@ def _reservar_stock_inmediato(linea_ov: OrdenVentaProducto, estado_activa: Estad
         )
         cantidad_pendiente -= a_tomar
 
-    return cantidad_pendiente == 0
+    # Usamos una pequeña tolerancia para comparación de floats si es necesario, 
+    # o simplemente comparamos con 0 si tus cantidades son enteras.
+    return cantidad_pendiente <= 0
