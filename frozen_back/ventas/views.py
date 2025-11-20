@@ -12,7 +12,7 @@ from empleados.models import Empleado
 from stock.models import LoteProduccion  # según tu estructura
 from django.db import models
 from rest_framework import status
-from .services import  cancelar_orden_venta, facturar_orden_y_descontar_stock, crear_nota_credito_y_devolver_stock, registrar_orden_venta_y_actualizar_estado
+from .services import  cancelar_orden_venta, facturar_orden_y_descontar_stock, crear_nota_credito_y_devolver_stock, registrar_orden_venta_y_actualizar_estado, procesar_orden_venta_online
 from .models import Factura, OrdenVenta, Reclamo, Sugerencia, NotaCredito
 from django.db import transaction
 from .filters import OrdenVentaFilter
@@ -316,37 +316,37 @@ def crear_orden_venta(request):
             data = json.loads(request.body)
             estado_creada = EstadoVenta.objects.get(descripcion__iexact="Creada")
             
-            # --- INICIO DE VALIDACIÓN MANUAL ---
+            # --- VALIDACIÓN MANUAL ---
             tipo_venta_enviado = data.get("tipo_venta")
             zona_enviada = data.get("zona")
-            # 1. Validar tipo_venta
+
             validos_tipo_venta = OrdenVenta.TipoVenta.values
             if tipo_venta_enviado not in validos_tipo_venta:
                 return JsonResponse({
                     "error": f"El valor de 'tipo_venta' no es válido. Debe ser uno de: {validos_tipo_venta}"
                 }, status=400)
 
-            # 2. Validar zona (solo si se envió)
             validos_zona = OrdenVenta.TipoZona.values
             if zona_enviada and zona_enviada not in validos_zona:
                 return JsonResponse({
                     "error": f"El valor de 'zona' no es válido. Debe ser uno de: {validos_zona}"
                 }, status=400)
-            # --- FIN DE VALIDACIÓN MANUAL ---
             
+            # --- INICIO DE LA TRANSACCIÓN ---
             with transaction.atomic():
                 # Validar empleado si se envió
                 id_empleado = data.get("id_empleado")
                 if id_empleado and not Empleado.objects.filter(pk=id_empleado).exists():
+                    # Esto también causa rollback porque sale del atomic con un return antes del commit
                     return JsonResponse({"error": "Empleado no encontrado"}, status=400)
 
-                # Crear la orden de venta directamente
+                # 1. Crear la orden de venta (Temporalmente en memoria de la transacción)
                 orden_venta = OrdenVenta.objects.create(
                     id_cliente_id=data.get("id_cliente"),
                     id_estado_venta=estado_creada,
                     id_prioridad_id=data.get("id_prioridad"),
                     fecha_entrega=data.get("fecha_entrega"),
-                    tipo_venta=data.get("tipo_venta"),
+                    tipo_venta=tipo_venta_enviado,
                     calle=data.get("calle"),
                     altura=data.get("altura"),
                     localidad=data.get("localidad"),
@@ -354,6 +354,7 @@ def crear_orden_venta(request):
                     id_empleado_id=id_empleado if id_empleado else None
                 )
 
+                # 2. Crear los productos
                 productos = data.get("productos", [])
                 for p in productos:
                     OrdenVentaProducto.objects.create(
@@ -362,16 +363,29 @@ def crear_orden_venta(request):
                         cantidad=p["cantidad"]
                     )
 
-               # --- CAMBIO ---
-                # LLAMADA ÚNICA AL SERVICIO SIMPLE
-                registrar_orden_venta_y_actualizar_estado(orden_venta)
-                # --- FIN CAMBIO ---
+                # 3. LÓGICA DE DECISIÓN
+                if tipo_venta_enviado == 'ONL':
+                    # Venta Online: Verificación ESTRICTA de stock
+                    resultado_online = procesar_orden_venta_online(orden_venta)
+                    
+                    if not resultado_online['exito']:
+                        # 🚨 CRÍTICO: Lanzamos excepción para provocar ROLLBACK.
+                        # Esto deshace la creación de la OrdenVenta y sus Productos.
+                        # El usuario recibirá un error 400 y la orden NO existirá en la BD.
+                        raise Exception(f"No se pudo procesar la venta: {resultado_online['mensaje']}")
 
-            # Devolvemos la orden con su estado final y todos sus datos
+                else:
+                    # Venta Empresarial (EMP): Solo registra y espera al Planificador
+                    registrar_orden_venta_y_actualizar_estado(orden_venta)
+
+            # Si llegamos aquí, la transacción se confirma (COMMIT)
+            orden_venta.refresh_from_db()
             serializer = OrdenVentaSerializer(orden_venta)
             return JsonResponse(serializer.data, status=201)
 
         except Exception as e:
+            # Cualquier error (incluido el de falta de stock) cae aquí.
+            # Al salir del bloque 'with transaction.atomic()' por una excepción, Django hace ROLLBACK automático.
             return JsonResponse({"error": str(e)}, status=400)
     
     return JsonResponse({"error": "Método no permitido"}, status=405)

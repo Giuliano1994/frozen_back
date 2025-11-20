@@ -1,3 +1,4 @@
+import math
 from django.db import models
 from productos.models import Unidad 
 
@@ -30,5 +31,21 @@ class MateriaPrima(models.Model):
     id_proveedor = models.ForeignKey(Proveedor, on_delete=models.CASCADE, db_column="id_proveedor")
     cantidad_minima_pedido = models.IntegerField(default=1)
 
+    def calcular_cantidad_a_pedir(self, cantidad_necesaria):
+        """
+        Calcula la cantidad a pedir redondeando al múltiplo de cantidad_minima_pedido
+        Ej: Si necesito 25kg y el lote es 20kg → retorna 40kg (2 lotes)
+        """
+        if cantidad_necesaria <= 0:
+            return 0
+        
+        # Si no hay lote mínimo definido, pedir exactamente lo necesario
+        if self.cantidad_minima_pedido <= 1:
+            return cantidad_necesaria
+            
+        # Calcular múltiplos del lote del proveedor
+        multiplos = math.ceil(cantidad_necesaria / self.cantidad_minima_pedido)
+        return multiplos * self.cantidad_minima_pedido
+    
     class Meta:
         db_table = "materia_prima"

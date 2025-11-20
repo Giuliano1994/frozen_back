@@ -494,7 +494,7 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
         ops_vinculadas__isnull=True
     ).select_related(
         'id_orden_venta', 'id_producto'
-    ).order_by('id_orden_venta__fecha_entrega', '-id_orden_venta__id_prioridad__id_prioridad')
+    ).order_by('id_orden_venta__fecha_entrega', 'id_orden_venta__id_prioridad__id_prioridad')
 
     stock_virtual_pt = {
         p_id: get_stock_disponible_para_producto(p_id)
@@ -822,7 +822,7 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
                 
                 if cantidad_faltante_op <= 0: continue
                 
-                cantidad_a_comprar = cantidad_faltante_op
+                cantidad_a_comprar = mp.calcular_cantidad_a_pedir(cantidad_faltante_op)
                 if cantidad_a_comprar > 0:
                     lead_proveedor = ingr.id_materia_prima.id_proveedor.lead_time_days
                     max_lead_time_mp = max(max_lead_time_mp, lead_proveedor)
@@ -1144,20 +1144,21 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
         
 
         for mp_id, cantidad_necesaria_hoy in info["items"].items():
-                item_oc, item_created = OrdenCompraMateriaPrima.objects.get_or_create(
-                    id_orden_compra=oc,
-                    id_materia_prima_id=mp_id,
-                    defaults={'cantidad': cantidad_necesaria_hoy}
-                )
-                
-                if item_created:
-                    print(f"      - NUEVO Item: {cantidad_necesaria_hoy} de MP {mp_id} añadido a OC {oc.id_orden_compra}.")
-                else:
-                    # ✅ CORRECCIÓN AQUÍ: SUMAR en lugar de SO-BRESCRIBIR
-                    cantidad_anterior = item_oc.cantidad
-                    item_oc.cantidad += cantidad_necesaria_hoy 
-                    item_oc.save()
-                    
-                    print(f"      - Item existente (MP {mp_id}) en OC {oc.id_orden_compra} AUMENTADO de {cantidad_anterior} a {item_oc.cantidad}.")
+            mp = MateriaPrima.objects.get(id_materia_prima=mp_id)
+            cantidad_final = mp.calcular_cantidad_a_pedir(cantidad_necesaria_hoy)
+            
+            item_oc, item_created = OrdenCompraMateriaPrima.objects.get_or_create(
+                id_orden_compra=oc,
+                id_materia_prima_id=mp_id,
+                defaults={'cantidad': cantidad_final}
+            )
+            
+            if item_created:
+                print(f"      - NUEVO Item: {cantidad_final} de MP {mp_id} (necesitaba {cantidad_necesaria_hoy}, lote: {mp.cantidad_minima_pedido})")
+            else:
+                cantidad_anterior = item_oc.cantidad
+                item_oc.cantidad += cantidad_final 
+                item_oc.save()
+                print(f"      - Item existente (MP {mp_id}) en OC {oc.id_orden_compra} AUMENTADO de {cantidad_anterior} a {item_oc.cantidad} (lote: {mp.cantidad_minima_pedido})")
 
     print("\n--- PLANIFICADOR MRP FINALIZADO ---")

@@ -321,29 +321,36 @@ class ReporteCumplimientoPlan(APIView):
     API para calcular el Porcentaje de Cumplimiento de Adherencia (PCA) por Cantidad (Volumen).
     """
     def get(self, request, *args, **kwargs):
+        # NOTA: parsear_fechas debe devolver objetos datetime/date, y generalmente 
+        # para rangos de fechas (A, B) se filtra desde A 00:00:00 hasta B 23:59:59.
         fecha_desde, fecha_hasta = parsear_fechas(request) 
         
         if fecha_desde is None or fecha_hasta is None:
             return Response({"error": "Debe proporcionar fechas válidas (desde, hasta) en formato YYYY-MM-DD."}, status=400)
         
-        # 1. CALCULAR EL TOTAL PLANIFICADO (DENOMINADOR)
-        total_planificado_query = OrdenDeTrabajo.objects.filter(
-            hora_inicio_programada__range=(fecha_desde, fecha_hasta)
-        ).aggregate(
+        # 1. FILTRO BASE: Seleccionamos todas las OT cuyo CUMPLIMIENTO estaba PROGRAMADO
+        # dentro del rango de fechas solicitado.
+        base_query = OrdenDeTrabajo.objects.filter(
+            # Filtramos por la fecha de fin programada, ya que es el criterio de adherencia
+            hora_fin_programada__range=(fecha_desde, fecha_hasta)
+        )
+        
+        # 2. CALCULAR EL TOTAL PLANIFICADO (DENOMINADOR)
+        total_planificado_query = base_query.aggregate(
             total_planificado=Coalesce(Sum('cantidad_programada'), Value(0.0), output_field=FloatField())
         )
         total_planificado = total_planificado_query.get('total_planificado', 0.0)
 
-        # 2. CALCULAR LA CANTIDAD CUMPLIDA A TIEMPO (NUMERADOR)
-        ots_anotadas = OrdenDeTrabajo.objects.filter(
-            hora_inicio_programada__range=(fecha_desde, fecha_hasta) 
-        ).annotate(
-            dia_fin_real=F('hora_fin_real__date'),
-            dia_fin_programado=F('hora_fin_programada__date')
-        ).annotate(
-            cumplio_fecha=Case(
+        # 3. ANOTAR CUMPLIMIENTO A TIEMPO (Lógica de Adherencia)
+        # La adherencia se cumple si la hora_fin_real es MENOR o IGUAL a la hora_fin_programada
+        # Y si el estado es 'Completada'.
+        ots_anotadas = base_query.annotate(
+            # NOTA: Comparamos las horas/timestamps, no solo las fechas, para mayor precisión
+            cumplio_adherencia=Case(
                 When(
-                    dia_fin_real=F('dia_fin_programado'),
+                    # La OT debe estar Completada Y haber terminado A TIEMPO
+                    id_estado_orden_trabajo__descripcion='Completada',
+                    hora_fin_real__lte=F('hora_fin_programada'),
                     then=Value(True)
                 ),
                 default=Value(False),
@@ -351,10 +358,12 @@ class ReporteCumplimientoPlan(APIView):
             )
         )
         
+        # 4. CALCULAR LA CANTIDAD CUMPLIDA A TIEMPO (NUMERADOR)
+        # Sumamos la cantidad producida SÓLO de las OT que cumplieron la adherencia.
         total_cumplido_query = ots_anotadas.filter(
-            cumplio_fecha=True, 
-            id_estado_orden_trabajo__descripcion='Completada', 
-            hora_fin_real__isnull=False, 
+            cumplio_adherencia=True,
+            # También verificamos que se haya registrado una cantidad (seguridad)
+            cantidad_producida__isnull=False
         ).aggregate(
             total_cumplido_adherencia=Coalesce(
                 Sum('cantidad_producida'), 
@@ -364,17 +373,15 @@ class ReporteCumplimientoPlan(APIView):
         )
         total_cumplido = total_cumplido_query.get('total_cumplido_adherencia', 0.0)
 
-        # 3. CÁLCULO DEL PCA y Respuesta
+        # 5. CÁLCULO DEL PCA y Respuesta
         pcp = 0.0
         if total_planificado > 0:
             pcp = (total_cumplido / total_planificado) * 100.0
 
-        # CORRECCIÓN DE ERROR: Usar timedelta directamente
-        fecha_fin_respuesta = (fecha_hasta - timedelta(days=1)).strftime('%Y-%m-%d')
-        
         resultado = {
             "fecha_desde": fecha_desde.strftime('%Y-%m-%d'),
-            "fecha_hasta": fecha_fin_respuesta,
+            # Retornamos la fecha_hasta tal cual se recibió/parseó.
+            "fecha_hasta": fecha_hasta.strftime('%Y-%M-%d'), 
             "total_planificado": total_planificado,
             "total_cantidad_cumplida_a_tiempo": total_cumplido,
             "porcentaje_cumplimiento_adherencia": round(pcp, 2)
@@ -837,13 +844,16 @@ class ReporteDisponibilidadAjustada(APIView):
 
 class ReporteOEEGeneral(APIView):
     def get(self, request, *args, **kwargs):
+        # Asumimos que parsear_fechas devuelve objetos datetime.
         fecha_desde_global, fecha_hasta_global = parsear_fechas(request)
-        if fecha_desde_global is None:
-            return Response({"error": "Fechas inválidas."}, status=400)
+        
+        if fecha_desde_global is None or fecha_desde_global > fecha_hasta_global:
+            # Si el rango es inválido, retornamos una lista vacía o un error claro.
+            return Response({"error": "Rango de fechas inválido o nulo."}, status=400)
 
         resultados_mensuales = []
         
-        # Preparamos las instancias de las vistas de factores
+        # Preparamos las instancias de las vistas de factores (OPTIMAL)
         disponibilidad_view = ReporteDisponibilidadAjustada()
         rendimiento_view = ReporteFactorRendimientoOEE()
         calidad_view = ReporteFactorCalidadOEE()
@@ -851,41 +861,51 @@ class ReporteOEEGeneral(APIView):
         # Inicializar el bucle mensual
         fecha_actual_desde = fecha_desde_global
         
-        while fecha_actual_desde <= fecha_hasta_global:
+        # 1. Bucle principal para iterar mes a mes
+        # Usamos el primer día del mes para la comparación (más robusto)
+        while fecha_actual_desde.date() <= fecha_hasta_global.date():
             
-            # Calcular el primer día del próximo mes
-            fecha_proximo_mes = fecha_actual_desde + relativedelta(months=1)
+            # 2. Calcular el primer día del próximo mes (para el avance y el límite)
+            # El uso de relativedelta requiere la importación (python-dateutil)
+            fecha_proximo_mes = fecha_actual_desde.replace(day=1) + relativedelta(months=1)
             
-            # Establecer el fin del mes actual (justo antes del inicio del siguiente)
+            # 3. Establecer el fin del periodo de cálculo: 
+            # Es el final del mes, PERO sin exceder la fecha_hasta_global.
             fecha_actual_hasta = fecha_proximo_mes - timedelta(seconds=1)
             
-            # Ajustar la fecha de fin si excede la fecha de fin global
+            # 4. Ajustar el fin del periodo si excede la fecha de fin global
             if fecha_actual_hasta > fecha_hasta_global:
                 fecha_actual_hasta = fecha_hasta_global
 
-            # 3. Calcular los 3 factores para el MES ACTUAL
+            # 5. Si la fecha_actual_desde es posterior a la fecha_actual_hasta ajustada,
+            # (solo ocurre si la fecha_desde_global es, por ejemplo, el 31/01 y la fecha_hasta_global es el 01/02),
+            # salimos del bucle. Esto ayuda a evitar cálculos con rango inverso.
+            if fecha_actual_desde > fecha_actual_hasta:
+                break
+
+            # 6. Calcular los 3 factores para el PERIODO ACTUAL [fecha_actual_desde, fecha_actual_hasta]
+            # NOTA: Los métodos internos deben devolver un float entre 0.0 y 1.0 (ej. 0.85)
             factor_disponibilidad, _ = disponibilidad_view._calculate_disponibilidad_ajustada(fecha_actual_desde, fecha_actual_hasta)
             factor_rendimiento, _ = rendimiento_view._calculate_factor_rendimiento(fecha_actual_desde, fecha_actual_hasta)
             factor_calidad, _ = calidad_view._calculate_factor_calidad(fecha_actual_desde, fecha_actual_hasta)
 
-            # 4. CÁLCULO FINAL DEL OEE
+            # 7. CÁLCULO FINAL DEL OEE
             factor_oee = factor_disponibilidad * factor_rendimiento * factor_calidad
             
-            # 5. Guardar el resultado del mes
+            # 8. Guardar el resultado del mes
             resultados_mensuales.append({
-                "mes": fecha_actual_desde.strftime('%Y-%m'),
+                # Usamos el primer día del mes para representar el período
+                "periodo_inicio": fecha_actual_desde.strftime('%Y-%m-%d'),
+                "periodo_fin": fecha_actual_hasta.strftime('%Y-%m-%d'),
                 "disponibilidad": round(factor_disponibilidad * 100.0, 2),
                 "rendimiento": round(factor_rendimiento * 100.0, 2),
                 "calidad": round(factor_calidad * 100.0, 2),
                 "oee_total": round(factor_oee * 100.0, 2),
             })
             
-            # 6. Mover al inicio del próximo mes
+            # 9. Mover al inicio del próximo mes para la siguiente iteración
             fecha_actual_desde = fecha_proximo_mes
-            
-            if fecha_actual_desde > fecha_hasta_global:
-                break
-        
+
         return Response(resultados_mensuales)
 
 

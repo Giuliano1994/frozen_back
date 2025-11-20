@@ -3,11 +3,12 @@ from .models import OrdenVentaProducto, EstadoVenta, OrdenVenta, Factura, NotaCr
 from stock.models import LoteProduccion, ReservaStock, EstadoLoteProduccion, EstadoReserva 
 from stock.services import verificar_stock_y_enviar_alerta
 from stock.models import ReservaStock
-from django.db.models import Sum, F, Q
+from django.db.models import Sum, F, Q, ExpressionWrapper, FloatField
 from collections import defaultdict
 from datetime import date, timedelta
 from django.utils import timezone
 import math
+from django.db.models.functions import Coalesce
 
 # Importar modelos
 from productos.models import Producto
@@ -309,3 +310,96 @@ def verificar_orden_completa(items):
         "detalles": detalles_items,
         "items_analizados": len(items)
     }
+
+
+
+
+
+
+
+def procesar_orden_venta_online(orden_venta: OrdenVenta):
+    """
+    Lógica específica para VENTAS ONLINE:
+    1. Intenta reservar stock existente inmediatamente.
+    2. Cambia el estado a 'Pendiente de Pago' (o 'Sin Stock' si falla).
+    """
+    print(f"🛒 Procesando Venta Online #{orden_venta.pk}...")
+    
+    # 1. Obtener estados necesarios
+    estado_pendiente_pago, _ = EstadoVenta.objects.get_or_create(descripcion__iexact="Pendiente de Pago")
+    estado_sin_stock, _ = EstadoVenta.objects.get_or_create(descripcion__iexact="Cancelada por Stock") # O el estado que prefieras
+    estado_reserva_activa, _ = EstadoReserva.objects.get_or_create(descripcion__iexact="Activa")
+
+    todas_reservadas = True
+    errores = []
+
+    # 2. Iterar productos y reservar
+    for linea in orden_venta.ordenventaproducto_set.all():
+        exito_reserva = _reservar_stock_inmediato(linea, estado_reserva_activa)
+        if not exito_reserva:
+            todas_reservadas = False
+            errores.append(f"Falta stock para {linea.id_producto.descripcion}")
+
+    # 3. Actualizar Estado de la Venta
+    if todas_reservadas:
+        orden_venta.id_estado_venta = estado_pendiente_pago
+        orden_venta.save()
+        print(f"✅ Venta Online #{orden_venta.pk} -> Reservada y Pendiente de Pago")
+        return {'exito': True, 'mensaje': 'Stock reservado'}
+    else:
+        # Aquí decides: ¿La dejas en 'Creada' para que produccion la vea? 
+        # ¿O le avisas al usuario que no hay stock? 
+        # Asumamos que para Online, si no hay stock, no se procesa el pago:
+        print(f"❌ Venta Online #{orden_venta.pk} -> Falta stock")
+        return {'exito': False, 'mensaje': ", ".join(errores)}
+
+def _reservar_stock_inmediato(linea_ov: OrdenVentaProducto, estado_activa: EstadoReserva) -> bool:
+    """
+    Intenta reservar el 100% de la cantidad solicitada.
+    Retorna True si logró reservar todo, False si falta algo.
+    """
+    cantidad_necesaria = linea_ov.cantidad
+    
+    filtro_reservas_activas = Q(reservas__id_estado_reserva__descripcion='Activa')
+    
+    lotes_disponibles = LoteProduccion.objects.filter(
+        id_producto=linea_ov.id_producto,
+        id_estado_lote_produccion__descripcion="Disponible"
+    ).annotate(
+        total_reservado=Coalesce(Sum('reservas__cantidad_reservada', filter=filtro_reservas_activas), 0)
+    ).annotate(
+        # --- CORRECCIÓN AQUÍ ---
+        # Usamos ExpressionWrapper para manejar la resta entre Entero y Flotante
+        disponible_real=ExpressionWrapper(
+            F('cantidad') - F('total_reservado'),
+            output_field=FloatField()
+        )
+    ).filter(
+        disponible_real__gt=0
+    ).order_by('fecha_vencimiento')
+
+    # Verificamos si hay suficiente stock TOTAL antes de empezar a reservar
+    total_existente = sum(l.disponible_real for l in lotes_disponibles)
+    
+    # Nota: Al comparar floats, es bueno tener cuidado, pero para stock suele funcionar directo
+    if total_existente < cantidad_necesaria:
+        return False 
+
+    cantidad_pendiente = cantidad_necesaria
+    
+    for lote in lotes_disponibles:
+        if cantidad_pendiente <= 0: break
+        
+        a_tomar = min(lote.disponible_real, cantidad_pendiente)
+        
+        ReservaStock.objects.create(
+            id_orden_venta_producto=linea_ov,
+            id_lote_produccion=lote,
+            cantidad_reservada=a_tomar,
+            id_estado_reserva=estado_activa
+        )
+        cantidad_pendiente -= a_tomar
+
+    # Usamos una pequeña tolerancia para comparación de floats si es necesario, 
+    # o simplemente comparamos con 0 si tus cantidades son enteras.
+    return cantidad_pendiente <= 0
