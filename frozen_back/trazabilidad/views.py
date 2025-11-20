@@ -8,7 +8,7 @@ from django.views.decorators.http import require_http_methods
 
 # Asegúrate de que estas importaciones apunten a los servicios que corregimos
 from .services import get_traceability_for_order, get_traceability_forward, get_traceability_backward_op 
-from produccion.models import OrdenProduccion
+from produccion.models import OrdenProduccion, OrdenProduccionPegging
 from stock.models import ReservaMateriaPrima
 from stock.models import ReservaStock, LoteProduccion, LoteProduccionMateria
 from ventas.models import OrdenVenta, OrdenVentaProducto
@@ -240,6 +240,83 @@ def obtener_lotes_produccion_por_mp(request, id_lote_mp):
             "lote_materia_prima_origen": id_lote_mp,
             "cantidad_encontrada": len(lista_resultados),
             "lotes_produccion": lista_resultados
+        })
+
+    except Exception as e:
+        return JsonResponse({"exito": False, "error": str(e)}, status=500)
+    
+def obtener_ordenes_venta_por_lote(request, id_lote):
+    try:
+        lista_ventas = []
+
+        # ---------------------------------------------------------
+        # RUTA A: BUSCAR EN RESERVA DE STOCK (Ya fabricado y guardado)
+        # ---------------------------------------------------------
+        reservas_stock = ReservaStock.objects.filter(
+            id_lote_produccion=id_lote
+        ).select_related(
+            'id_orden_venta_producto',
+            'id_orden_venta_producto__id_orden_venta',
+            'id_orden_venta_producto__id_orden_venta__id_cliente'
+        )
+
+        for res in reservas_stock:
+            ov = res.id_orden_venta_producto.id_orden_venta
+            cliente = ov.id_cliente
+            
+            lista_ventas.append({
+                "origen_asignacion": "STOCK (Deposito)",
+                "id_orden_venta": ov.id_orden_venta,
+                "cliente": cliente.nombre,
+                "fecha_entrega": ov.fecha_entrega,
+                "producto": res.id_orden_venta_producto.id_producto.nombre,
+                "cantidad_asignada": res.cantidad_reservada
+            })
+
+        # ---------------------------------------------------------
+        # RUTA B: BUSCAR EN PEGGING (Asignado durante la producción)
+        # ---------------------------------------------------------
+        # 1. Buscamos qué Orden de Producción fabricó este lote
+        ordenes_prod = OrdenProduccion.objects.filter(id_lote_produccion=id_lote)
+        ids_ops = ordenes_prod.values_list('id_orden_produccion', flat=True)
+
+        if ids_ops:
+            peggings = OrdenProduccionPegging.objects.filter(
+                id_orden_produccion__in=ids_ops
+            ).select_related(
+                'id_orden_venta_producto',
+                'id_orden_venta_producto__id_orden_venta',
+                'id_orden_venta_producto__id_orden_venta__id_cliente'
+            )
+
+            for peg in peggings:
+                ov = peg.id_orden_venta_producto.id_orden_venta
+                cliente = ov.id_cliente
+
+                lista_ventas.append({
+                    "origen_asignacion": "PEGGING (Desde Producción)",
+                    "id_orden_venta": ov.id_orden_venta,
+                    "cliente": cliente.nombre,
+                    "fecha_entrega": ov.fecha_entrega,
+                    "producto": peg.id_orden_venta_producto.id_producto.nombre,
+                    "cantidad_asignada": peg.cantidad_asignada
+                })
+
+        # ---------------------------------------------------------
+        # RESPUESTA FINAL
+        # ---------------------------------------------------------
+        if not lista_ventas:
+            return JsonResponse({
+                "exito": True,
+                "mensaje": "El lote existe pero está LIBRE (No asignado a ninguna venta ni en stock ni en producción).",
+                "ordenes_venta": []
+            })
+
+        return JsonResponse({
+            "exito": True,
+            "lote_produccion_consultado": id_lote,
+            "cantidad_ordenes_vinculadas": len(lista_ventas),
+            "ordenes_venta": lista_ventas
         })
 
     except Exception as e:
