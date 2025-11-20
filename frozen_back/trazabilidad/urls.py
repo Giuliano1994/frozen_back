@@ -19,9 +19,8 @@ router.register(r'trazabilidad', TrazabilidadViewSet, basename='trazabilidad')
 
 # Las URLs de la API se incluyen aquí.
 urlpatterns = [
-    # Quedará como: /trazabilidad/ordenes-por-lote/123/
-    path('ordenes-por-lote/<int:id_lote>/', ordenes_por_lote_mp, name='ordenes-por-lote'),
-    path('lotes-produccion/por-mp/<int:id_lote_mp>/', obtener_lotes_produccion_por_mp, name='lotes-produccion-por-mp'),
-    path('por-lote-produccion/<int:id_lote>/', obtener_ordenes_venta_por_lote),
+    path('trazabilidad/ordenes-produccion-por-lote-mp/<int:id_lote>/', ordenes_por_lote_mp),
+    path('trazabilidad/lotes-producto-por-lote-mp/<int:id_lote_mp>/', obtener_lotes_produccion_por_mp),
+    path('trazabilidad/ordenes-venta-por-lote-mp/int:id_lote>/', obtener_ordenes_venta_por_lote),
     path('', include(router.urls)),
 ]
