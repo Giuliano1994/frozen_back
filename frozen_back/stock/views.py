@@ -12,6 +12,8 @@ from stock.services import get_stock_disponible_para_producto,  verificar_stock_
 from django.views.decorators.csrf import csrf_exempt
 from produccion.services import procesar_ordenes_en_espera
 from django.db.models import Sum
+from django.db import transaction
+from produccion.models import OrdenProduccion, EstadoOrdenProduccion
 
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import (
@@ -19,7 +21,8 @@ from .models import (
     EstadoLoteMateriaPrima,
     LoteProduccion,
     LoteMateriaPrima,
-    LoteProduccionMateria
+    LoteProduccionMateria,
+    ReservaMateriaPrima
 )
 from .serializers import (
     EstadoLoteProduccionSerializer,
@@ -77,6 +80,66 @@ class LoteProduccionViewSet(viewsets.ModelViewSet):
         count = lotes.count()
         lotes.delete()  # borrará reservas y relaciones en cascada
         return Response({"detail": f"{count} lotes de producción borrados"}, status=status.HTTP_204_NO_CONTENT)
+    
+
+    @action(detail=True, methods=['post'], url_path='cambiar-estado')
+    def cambiar_estado(self, request, pk=None):
+        """
+        Cambia el estado del Lote de Producción.
+        Si este lote está vinculado a una Orden de Producción, busca el estado equivalente
+        en Producción y actualiza la Orden también (Trazabilidad hacia atrás).
+        """
+        id_nuevo_estado = request.data.get('id_estado_lote_produccion')
+        
+        if not id_nuevo_estado:
+            return Response({"error": "Falta el parámetro 'id_estado_lote_produccion'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # 1. Obtenemos el lote y el nuevo estado deseado
+            lote = self.get_object()
+            nuevo_estado_lote = EstadoLoteProduccion.objects.get(pk=id_nuevo_estado)
+            
+            mensaje_extra = "Solo se actualizó el lote (sin orden vinculada o sin estado equivalente)."
+
+            with transaction.atomic():
+                # 2. Actualizamos el Lote de Producción
+                lote.id_estado_lote_produccion = nuevo_estado_lote
+                lote.save()
+
+                # 3. Buscamos la Orden de Producción asociada (Relación Inversa)
+                # Buscamos una OP que tenga este lote asignado en su campo 'id_lote_produccion'
+                op_asociada = OrdenProduccion.objects.filter(id_lote_produccion=lote).first()
+
+                if op_asociada:
+                    try:
+                        # 4. Buscamos el estado equivalente en Producción (por descripción/nombre)
+                        # Ej: Si el lote pasa a "Cuarentena", buscamos "Cuarentena" en los estados de OP
+                        estado_equivalente_op = EstadoOrdenProduccion.objects.get(
+                            descripcion__iexact=nuevo_estado_lote.descripcion
+                        )
+                        
+                        # 5. Actualizamos la OP si el estado es distinto
+                        if op_asociada.id_estado_orden_produccion != estado_equivalente_op:
+                            op_asociada.id_estado_orden_produccion = estado_equivalente_op
+                            op_asociada.save()
+                            mensaje_extra = f"Se actualizó también la Orden de Producción #{op_asociada.pk} al estado '{estado_equivalente_op.descripcion}'."
+                        else:
+                            mensaje_extra = "La Orden de Producción asociada ya tenía ese estado."
+
+                    except EstadoOrdenProduccion.DoesNotExist:
+                        mensaje_extra = f"Se actualizó el lote, pero no existe el estado '{nuevo_estado_lote.descripcion}' en el módulo de Producción."
+                
+            return Response({
+                "mensaje": "Estado del lote actualizado correctamente.",
+                "detalle": mensaje_extra,
+                "nuevo_estado": nuevo_estado_lote.descripcion,
+                "id_lote": lote.id_lote_produccion
+            }, status=status.HTTP_200_OK)
+
+        except EstadoLoteProduccion.DoesNotExist:
+            return Response({"error": "El id_estado_lote_produccion indicado no existe."}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(["GET"])
@@ -95,20 +158,10 @@ class LoteMateriaPrimaViewSet(viewsets.ModelViewSet):
     search_fields = ["id_materia_prima__nombre"]
     filterset_fields = ["id_materia_prima", "id_estado_lote_materia_prima", "fecha_vencimiento"]
 
-
- # --- MÉTODO AÑADIDO ---
     def perform_create(self, serializer):
-        """
-        Guarda el nuevo lote de materia prima y luego verifica si alguna orden 
-        en espera puede ser procesada con este nuevo stock.
-        """
-        # 1. Guarda el nuevo lote como siempre
         nuevo_lote = serializer.save()
         print(f"Se ha creado un nuevo lote de {nuevo_lote.id_materia_prima.nombre} con cantidad {nuevo_lote.cantidad}.")
-
-        # 2. Llama al servicio para que revise las órdenes pendientes
         procesar_ordenes_en_espera(nuevo_lote.id_materia_prima)
-
 
     @action(detail=False, methods=['delete'], url_path='bulk-delete')
     def bulk_delete(self, request):
@@ -130,8 +183,82 @@ class LoteMateriaPrimaViewSet(viewsets.ModelViewSet):
         lotes = LoteMateriaPrima.objects.filter(id_lote_materia_prima__gte=orden_min,
                                                 id_lote_materia_prima__lte=orden_max)
         count = lotes.count()
-        lotes.delete()  # borrará reservas y relaciones en cascada
+        lotes.delete()
         return Response({"detail": f"{count} lotes de materia prima borrados"}, status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'], url_path='cambiar-estado')
+    def cambiar_estado(self, request, pk=None):
+        """
+        Cambia el estado de un lote de MP.
+        Si se encuentra un estado equivalente en Producción, busca las Órdenes de Producción
+        donde se reservó esta materia prima y actualiza los Lotes de Producción resultantes.
+        """
+        id_nuevo_estado = request.data.get('id_estado_lote_materia_prima')
+        
+        if not id_nuevo_estado:
+            return Response({"error": "Debe proporcionar 'id_estado_lote_materia_prima'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            lote_mp = self.get_object()
+            nuevo_estado_mp = EstadoLoteMateriaPrima.objects.get(pk=id_nuevo_estado)
+
+            with transaction.atomic():
+                # 1. Actualizar Lote MP
+                lote_mp.id_estado_lote_materia_prima = nuevo_estado_mp
+                lote_mp.save()
+
+                mensaje_extra = "Solo se actualizó la materia prima."
+                
+                # 2. Buscar estado equivalente en Producción
+                try:
+                    estado_equivalente_prod = EstadoLoteProduccion.objects.get(
+                        descripcion__iexact=nuevo_estado_mp.descripcion
+                    )
+                    
+                    # --- NUEVA LÓGICA DE TRAZABILIDAD ---
+                    # Buscamos las reservas de este lote de materia prima
+                    reservas = ReservaMateriaPrima.objects.filter(
+                        id_lote_materia_prima=lote_mp
+                    ).select_related('id_orden_produccion')
+
+                    # Recolectamos los IDs de los lotes de producción asociados a esas Órdenes
+                    ids_lotes_prod = set()
+                    
+                    for reserva in reservas:
+                        op = reserva.id_orden_produccion
+                        # Solo agregamos si la OP ya generó un lote de producción (no es None)
+                        if op.id_lote_produccion:
+                            ids_lotes_prod.add(op.id_lote_produccion.pk)
+                    
+                    # Buscamos los objetos LoteProduccion reales
+                    lotes_afectados = LoteProduccion.objects.filter(pk__in=ids_lotes_prod)
+                    cantidad_afectados = lotes_afectados.count()
+
+                    # Actualizamos uno por uno para asegurar historial
+                    for lote_prod in lotes_afectados:
+                        # Solo actualizamos si el estado es diferente para evitar spam en historial
+                        if lote_prod.id_estado_lote_produccion != estado_equivalente_prod:
+                            lote_prod.id_estado_lote_produccion = estado_equivalente_prod
+                            lote_prod.save()
+
+                    if cantidad_afectados > 0:
+                        mensaje_extra = f"Se actualizaron {cantidad_afectados} lotes de producción asociados (vía Orden de Producción) al estado '{estado_equivalente_prod.descripcion}'."
+                    else:
+                        mensaje_extra = f"Se actualizó la MP a '{nuevo_estado_mp.descripcion}', pero no se encontraron Lotes de Producción generados asociados."
+
+                except EstadoLoteProduccion.DoesNotExist:
+                    mensaje_extra = f"No se encontró un estado de producción equivalente a '{nuevo_estado_mp.descripcion}', solo se actualizó la materia prima."
+
+            return Response({
+                "mensaje": "Estado actualizado exitosamente.",
+                "detalle": mensaje_extra,
+                "nuevo_estado": nuevo_estado_mp.descripcion
+            }, status=status.HTTP_200_OK)
+
+        except EstadoLoteMateriaPrima.DoesNotExist:
+            return Response({"error": "El estado de materia prima indicado no existe."}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 
