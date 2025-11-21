@@ -11,12 +11,13 @@ from django.conf import settings
 from empleados.models import Empleado
 from stock.models import LoteProduccion  # según tu estructura
 from django.db import models
+from django.db.models import Sum, F
 from rest_framework import status
 from .services import  cancelar_orden_venta, facturar_orden_y_descontar_stock, crear_nota_credito_y_devolver_stock, registrar_orden_venta_y_actualizar_estado, procesar_orden_venta_online
 from .models import Factura, OrdenVenta, Reclamo, Sugerencia, NotaCredito
 from django.db import transaction
 from .filters import OrdenVentaFilter
- 
+from productos.models import TipoProducto
 from .models import EstadoVenta, Cliente, OrdenVenta, OrdenVentaProducto, Prioridad
 from .serializers import (
     EstadoVentaSerializer,
@@ -628,6 +629,55 @@ class VerificarFactibilidadOrdenCompletaView(APIView):
 
 
 
-
-
-    
+@api_view(['GET'])
+def ventas_por_tipo_producto(request):
+    """
+    Retorna el volumen de ventas agrupado por tipo de producto
+    """
+    try:
+        # Obtener TODAS las ventas sin filtrar por estado
+        ventas_por_tipo = OrdenVentaProducto.objects.all().values(
+            'id_producto__id_tipo_producto__id_tipo_producto',
+            'id_producto__id_tipo_producto__descripcion'
+        ).annotate(
+            total_unidades=Sum('cantidad'),
+            monto_total=Sum(F('cantidad') * F('id_producto__precio'))
+        ).order_by('-total_unidades')
+        
+        # Formatear para el gráfico
+        chart_data = {
+            'labels': [item['id_producto__id_tipo_producto__descripcion'] for item in ventas_por_tipo],
+            'datasets': [{
+                'label': 'Unidades Vendidas',
+                'data': [item['total_unidades'] for item in ventas_por_tipo],
+                'backgroundColor': [
+                    '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', 
+                    '#9966FF', '#FF9F40', '#8AC926', '#1982C4',
+                    '#6A4C93', '#FF595E'
+                ],
+                'borderColor': [
+                    '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', 
+                    '#9966FF', '#FF9F40', '#8AC926', '#1982C4',
+                    '#6A4C93', '#FF595E'
+                ],
+                'borderWidth': 2
+            }]
+        }
+        
+        # Agregar información adicional para tooltips
+        chart_data['detalles'] = [
+            {
+                'tipo': item['id_producto__id_tipo_producto__descripcion'],
+                'unidades': item['total_unidades'],
+                'monto': float(item['monto_total']) if item['monto_total'] else 0
+            }
+            for item in ventas_por_tipo
+        ]
+        
+        return Response(chart_data)
+        
+    except Exception as e:
+        return Response(
+            {'error': f'Error al obtener datos: {str(e)}'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

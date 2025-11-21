@@ -12,8 +12,8 @@ router.register(r'ordenes-productos', OrdenVentaProductoViewSet)
 router.register(r'reclamos', ReclamoViewSet)
 router.register(r'sugerencias', SugerenciaViewSet)
 router.register(r'notas-credito', views.NotaCreditoViewSet)
-router.register(r'historial-ordenes-venta', HistorialOrdenVentaViewSet, basename='historial-ordenventa'),
-router.register(r'historial-notas-credito', HistorialNotaCreditoViewSet, basename='historial-notacredito'),
+router.register(r'historial-ordenes-venta', HistorialOrdenVentaViewSet, basename='historial-ordenventa')
+router.register(r'historial-notas-credito', HistorialNotaCreditoViewSet, basename='historial-notacredito')
 
 urlpatterns = [
     path('ordenes-venta/<int:orden_id>/detalle/', detalle_orden_venta, name='detalle_orden_venta'),
@@ -27,5 +27,5 @@ urlpatterns = [
  
    
     path('verificar-orden-completa/', VerificarFactibilidadOrdenCompletaView.as_view()),
-
+path('ventas-por-tipo-producto/', views.ventas_por_tipo_producto, name='ventas_por_tipo_producto'),
 ]
