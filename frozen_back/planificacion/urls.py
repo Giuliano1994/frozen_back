@@ -11,5 +11,6 @@ urlpatterns = [
         views.CalendarioPlanificacionView.as_view(), 
         name='calendario_planificacion_feed'
     ),
+    path('replanificar-ops-por-capacidad/', views.replanificar_capacidad_view, name='replanificar-ops-por-capacidad'),
 
 ]

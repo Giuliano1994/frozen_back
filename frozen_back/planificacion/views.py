@@ -22,6 +22,7 @@ from rest_framework.response import Response
 from django.db.models import F, Case, When, Value, CharField, Sum
 from django.utils import timezone
 from datetime import timedelta, datetime
+from planificacion.replanificador import replanificar_ops_por_capacidad
 
 @api_view(['POST']) # Define que esta vista solo acepta POST
 def ejecutar_planificacion_view(request):
@@ -133,6 +134,62 @@ def ejecutar_planificador_view(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
     
+@api_view(['POST'])
+def replanificar_capacidad_view(request):
+    """
+    Endpoint dedicado para disparar la Replanificación por Capacidad
+    (se recomienda ejecutar inmediatamente después de cambiar 'cant_por_hora').
+    
+    Acepta un JSON con:
+    {
+        "fecha": "YYYY-MM-DD" (Opcional, simula la fecha de hoy), 
+        "productos": [1, 2] // Opcional, lista de IDs de producto a replanificar
+    }
+    """
+    
+    fecha_a_usar = None
+    fecha_enviada = request.data.get('fecha')
+    productos_ids = request.data.get('productos')
+
+    # --- 1. Determinar Fecha de Ejecución ---
+    if fecha_enviada:
+        try:
+            fecha_a_usar = datetime.strptime(fecha_enviada, "%Y-%m-%d").date()
+        except ValueError:
+            return Response(
+                {"status": "error", "message": "Formato de fecha inválido. Use YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    else:
+        fecha_a_usar = timezone.localdate()
+
+    print(f"Iniciando Replanificación de Capacidad para fecha: {fecha_a_usar}")
+    
+    # --- 2. Ejecutar Replanificación ---
+    try:
+        replanificar_ops_por_capacidad(
+            fecha_simulada=fecha_a_usar,
+            productos_a_replanificar_ids=productos_ids
+        )
+        
+        mensaje = f"Replanificación por capacidad ejecutada para {fecha_a_usar}."
+        if productos_ids:
+            mensaje += f" Productos enfocados: {productos_ids}."
+            
+        return Response(
+            {"status": "ok", "message": mensaje },
+            status=status.HTTP_200_OK
+        )
+            
+    except Exception as e:
+        print(f"ERROR CRÍTICO al ejecutar replanificación de capacidad: {e}")
+        traceback.print_exc()
+        return Response(
+            {"status": "error", "message": f"Error en la replanificación de capacidad: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+    
+
 class CalendarioPlanificacionView(APIView):
     """
     API para obtener un feed de eventos de planificación (OPs, OCs y OVs) para un calendario.
