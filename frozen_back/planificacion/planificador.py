@@ -22,11 +22,12 @@ from stock.models import (
 from stock.services import get_stock_disponible_para_producto, get_stock_disponible_para_materia_prima
 from recetas.models import ProductoLinea, Receta, RecetaMateriaPrima
 from materias_primas.models import MateriaPrima, Proveedor
+from trazabilidad.views import get_config
 
 # --- Constantes de Planificación (Centralizadas) ---
-HORAS_LABORABLES_POR_DIA = 16
-DIAS_BUFFER_ENTREGA_PT = 1
-DIAS_BUFFER_RECEPCION_MP = 1
+#HORAS_LABORABLES_POR_DIA = 16
+#DIAS_BUFFER_ENTREGA_PT = 1
+#DIAS_BUFFER_RECEPCION_MP = 1
 
 # ===================================================================
 # FUNCIONES HELPER
@@ -98,6 +99,12 @@ def _reservar_stock_mp(op: OrdenProduccion, mp_id: int, cantidad_a_reservar: int
 @transaction.atomic
 def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
     
+    # 1. CARGA DINÁMICA DE CONFIGURACIÓN (Fresh data)
+    # Esto consulta la BD cada vez que corres el planificador, permitiendo cambios en caliente.
+    HORAS_LABORABLES_POR_DIA = get_config('HORAS_LABORABLES_POR_DIA', 16)
+    DIAS_BUFFER_ENTREGA_PT = get_config('DIAS_BUFFER_ENTREGA_PT', 1)
+    DIAS_BUFFER_RECEPCION_MP = get_config('DIAS_BUFFER_RECEPCION_MP', 1)
+
     hoy = fecha_simulada
     tomorrow = hoy + timedelta(days=1)
     fecha_limite_ov = hoy + timedelta(days=7)

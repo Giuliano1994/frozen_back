@@ -13,6 +13,7 @@ from stock.models import ReservaMateriaPrima
 from stock.models import ReservaStock, LoteProduccion, LoteProduccionMateria
 from ventas.models import OrdenVenta, OrdenVentaProducto
 from ventas.serializers import OrdenVentaSerializer
+from trazabilidad.models import Configuracion
 
 # Asumo que esta clase está en views.py de tu app de trazabilidad
 class TrazabilidadViewSet(viewsets.ViewSet):
@@ -321,3 +322,24 @@ def obtener_ordenes_venta_por_lote(request, id_lote):
 
     except Exception as e:
         return JsonResponse({"exito": False, "error": str(e)}, status=500)
+    
+
+
+
+
+
+
+# CONFIGURACIONES
+def get_config(clave: str, default_val: int) -> int:
+    """
+    Busca una configuración en la BD. Si no existe, devuelve el default.
+    Convierte el string de la BD a entero.
+    """
+    try:
+        config = Configuracion.objects.get(nombre_clave=clave)
+        # Convertimos a int porque en la BD se guarda como CharField (texto)
+        return int(config.valor) 
+    except (Configuracion.DoesNotExist, ValueError):
+        # Si no existe la clave o el valor no es un número, usamos el default
+        # Opcional: Podrías crear el registro automáticamente aquí si no existe
+        return default_val
