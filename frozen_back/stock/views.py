@@ -154,9 +154,12 @@ def obtener_lotes_de_materia_prima(request, id_materia_prima):
 class LoteMateriaPrimaViewSet(viewsets.ModelViewSet):
     queryset = LoteMateriaPrima.objects.all()
     serializer_class = LoteMateriaPrimaSerializer
-    filter_backends = [filters.SearchFilter, DjangoFilterBackend]
-    search_fields = ["id_materia_prima__nombre"]
+    filter_backends = [filters.SearchFilter, DjangoFilterBackend, filters.OrderingFilter]
+    search_fields = ["id_lote_materia_prima","id_materia_prima__nombre"]
     filterset_fields = ["id_materia_prima", "id_estado_lote_materia_prima", "fecha_vencimiento"]
+    ordering = ['-id_lote_materia_prima']
+
+
 
     def perform_create(self, serializer):
         nuevo_lote = serializer.save()
