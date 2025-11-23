@@ -8,6 +8,8 @@ from django.db.models.functions import Coalesce
 from django.conf import settings
 import threading
 import requests
+from stock.models import ReservaStock
+from produccion.models import OrdenProduccion, EstadoOrdenProduccion
 
 def cantidad_total_producto(id_producto):
     """
@@ -270,3 +272,47 @@ def verificar_stock_mp_y_enviar_alerta(id_materia_prima):
 
 # --- FIN DE NUEVAS FUNCIONES ---
     
+
+
+
+def actualizar_estado_lote_producto(lote_produccion, nuevo_estado):
+    """
+    Servicio centralizado para cambiar estado de un Lote de Producto.
+    1. Actualiza el lote.
+    2. Si es Cuarentena, borra reservas de ventas.
+    3. Sincroniza la Orden de Producción asociada.
+    """
+    mensajes = []
+    
+    # 1. Actualizar el Lote
+    lote_produccion.id_estado_lote_produccion = nuevo_estado
+    lote_produccion.save()
+
+    # 2. Lógica de CUARENTENA (Limpieza de Reservas)
+    if nuevo_estado.descripcion.lower() == "cuarentena":
+        reservas_activas = ReservaStock.objects.filter(
+            id_lote_produccion=lote_produccion,
+            id_estado_reserva__descripcion="Activa"
+        )
+        cantidad = reservas_activas.count()
+        
+        if cantidad > 0:
+            ovs_ids = list(reservas_activas.values_list('id_orden_venta_producto__id_orden_venta_id', flat=True))
+            reservas_activas.delete()
+            msg = f"⚠️ Lote {lote_produccion.pk} a Cuarentena: Se borraron {cantidad} reservas (OVs: {ovs_ids})."
+            mensajes.append(msg)
+            print(msg)
+
+    # 3. Sincronizar OP (Trazabilidad hacia atrás)
+    op_asociada = OrdenProduccion.objects.filter(id_lote_produccion=lote_produccion).first()
+    if op_asociada:
+        try:
+            estado_equiv_op = EstadoOrdenProduccion.objects.get(descripcion__iexact=nuevo_estado.descripcion)
+            if op_asociada.id_estado_orden_produccion != estado_equiv_op:
+                op_asociada.id_estado_orden_produccion = estado_equiv_op
+                op_asociada.save()
+                mensajes.append(f"OP #{op_asociada.pk} actualizada a '{estado_equiv_op.descripcion}'.")
+        except EstadoOrdenProduccion.DoesNotExist:
+            pass # No hay estado equivalente, no pasa nada
+
+    return mensajes
