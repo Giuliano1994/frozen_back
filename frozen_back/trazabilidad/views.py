@@ -322,13 +322,65 @@ def obtener_ordenes_venta_por_lote(request, id_lote):
 
     except Exception as e:
         return JsonResponse({"exito": False, "error": str(e)}, status=500)
+
+
+@require_http_methods(["GET"])
+def obtener_materias_primas_por_lote_pt(request, id_lote_pt):
+    try:
+        # PASO 1: Encontrar la Orden de Producción que fabricó este lote
+        ordenes = OrdenProduccion.objects.filter(id_lote_produccion=id_lote_pt)
+        
+        if not ordenes.exists():
+            return JsonResponse({
+                "exito": False, 
+                "mensaje": "No se encontró una Orden de Producción origen para este lote (o el lote no existe)."
+            }, status=404)
+
+        # Obtenemos los IDs de las órdenes (generalmente es 1, pero prevenimos errores si hay más)
+        ids_ordenes = ordenes.values_list('id_orden_produccion', flat=True)
+
+        # PASO 2: Buscar en las Reservas de Materia Prima asociadas a esa orden
+        # Usamos select_related para traer TODA la info en una sola consulta rápida:
+        # Reserva -> LoteMP -> MateriaPrima (Nombre)
+        reservas = ReservaMateriaPrima.objects.filter(
+            id_orden_produccion__in=ids_ordenes
+        ).select_related(
+            'id_lote_materia_prima',
+            'id_lote_materia_prima__id_materia_prima'
+        )
+
+        if not reservas.exists():
+            return JsonResponse({
+                "exito": True, 
+                "mensaje": "Se encontró la orden de producción, pero no tiene materias primas reservadas (¿Error de carga?).",
+                "materias_primas_utilizadas": []
+            })
+
+        # PASO 3: Construir la lista de resultados
+        lista_mp = []
+        for res in reservas:
+            lote_mp = res.id_lote_materia_prima
+            materia = lote_mp.id_materia_prima
+            
+            lista_mp.append({
+                "materia_prima": materia.nombre,
+                "id_lote_mp": lote_mp.id_lote_materia_prima,
+                "fecha_vencimiento_mp": lote_mp.fecha_vencimiento,
+                "cantidad_usada_en_esta_orden": res.cantidad_reservada,
+                # Opcional: Para saber de qué orden vino
+                "id_orden_produccion_origen": res.id_orden_produccion_id 
+            })
+
+        return JsonResponse({
+            "exito": True,
+            "lote_producto_terminado": id_lote_pt,
+            "cantidad_ingredientes": len(lista_mp),
+            "materias_primas_utilizadas": lista_mp
+        })
+
+    except Exception as e:
+        return JsonResponse({"exito": False, "error": str(e)}, status=500)
     
-
-
-
-
-
-
 # CONFIGURACIONES
 def get_config(clave: str, default_val: int) -> int:
     """
@@ -343,3 +395,6 @@ def get_config(clave: str, default_val: int) -> int:
         # Si no existe la clave o el valor no es un número, usamos el default
         # Opcional: Podrías crear el registro automáticamente aquí si no existe
         return default_val
+    
+
+

@@ -2,7 +2,7 @@
 
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import TrazabilidadViewSet, ordenes_por_lote_mp, obtener_lotes_produccion_por_mp, obtener_ordenes_venta_por_lote
+from .views import TrazabilidadViewSet, ordenes_por_lote_mp, obtener_lotes_produccion_por_mp, obtener_ordenes_venta_por_lote, obtener_materias_primas_por_lote_pt
 
 # Creamos un router
 router = DefaultRouter()
@@ -22,5 +22,8 @@ urlpatterns = [
     path('trazabilidad/ordenes-produccion-por-lote-mp/<int:id_lote>/', ordenes_por_lote_mp),
     path('trazabilidad/lotes-producto-por-lote-mp/<int:id_lote_mp>/', obtener_lotes_produccion_por_mp),
     path('trazabilidad/ordenes-venta-por-lote-mp/<int:id_lote>/', obtener_ordenes_venta_por_lote),
+    path('trazabilidad/lotes-mp-por-lote-pt/<int:id_lote_pt>/', obtener_materias_primas_por_lote_pt),
     path('', include(router.urls)),
 ]
+
+
