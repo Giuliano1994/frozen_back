@@ -576,7 +576,10 @@ def ejecutar_planificacion_diaria_mrp(fecha_simulada: date):
         # Chequeo para OVs completas (Lógica original mantenida)
         elif cantidad_para_producir <= 0 and cantidad_realmente_faltante > 0:
              # Si entró aquí es porque lo cubrió todo con stock virtual en el paso B
-             pass
+             if ov.id_estado_venta == estado_ov_creada:
+                print(f"     -> OV {ov.id_orden_venta} cubierta con stock. Pasando a 'Pendiente de Pago'.")
+                ov.id_estado_venta = estado_ov_pendiente_pago
+                ov.save(update_fields=['id_estado_venta'])
 
     # ===================================================================
     # ❗️ PASO 4: CANCELACIÓN DE OPs HUÉRFANAS
