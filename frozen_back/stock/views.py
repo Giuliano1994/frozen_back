@@ -87,8 +87,11 @@ class LoteProduccionViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='cambiar-estado')
     def cambiar_estado(self, request, pk=None):
         """
-        Cambia el estado del Lote. Si pasa a 'Cuarentena', elimina reservas de OVs.
-        También sincroniza con la Orden de Producción.
+        Cambia el estado del Lote. 
+        Si pasa a 'Cuarentena':
+           1. Elimina reservas de Productos Terminados (OVs).
+           2. Elimina reservas de Materia Prima de la OP.
+        También sincroniza el estado de la OP.
         """
         id_nuevo_estado = request.data.get('id_estado_lote_produccion')
         
@@ -100,44 +103,56 @@ class LoteProduccionViewSet(viewsets.ModelViewSet):
             nuevo_estado_lote = EstadoLoteProduccion.objects.get(pk=id_nuevo_estado)
             
             mensaje_extra = "Estado actualizado."
-            mensaje_reservas = ""
+            mensaje_reservas_pt = ""
+            mensaje_reservas_mp = ""
 
             with transaction.atomic():
                 # 1. Actualizamos el Lote de Producción
                 lote.id_estado_lote_produccion = nuevo_estado_lote
                 lote.save()
 
+                # 🔎 Buscamos la OP asociada AHORA (la necesitamos para borrar MP si es cuarentena)
+                op_asociada = OrdenProduccion.objects.filter(id_lote_produccion=lote).first()
+
                 # ===================================================================
-                # 🛡️ BLOQUE NUEVO: VALIDACIÓN DE CUARENTENA Y LIMPIEZA DE RESERVAS
+                # 🛡️ BLOQUE CUARENTENA: LIMPIEZA TOTAL (PT y MP)
                 # ===================================================================
                 if nuevo_estado_lote.descripcion.lower() == "cuarentena":
-                    # Buscamos reservas activas de este lote
-                    # Ajusta 'Activa' si tu estado de reserva se llama diferente (ej: 'Reservado')
-                    reservas_activas = ReservaStock.objects.filter(
+                    
+                    # --- A. Limpieza de Reservas de PRODUCTO TERMINADO (OVs) ---
+                    reservas_activas_pt = ReservaStock.objects.filter(
                         id_lote_produccion=lote,
                         id_estado_reserva__descripcion="Activa"
                     )
+                    cantidad_reservas_pt = reservas_activas_pt.count()
                     
-                    cantidad_reservas = reservas_activas.count()
-                    
-                    if cantidad_reservas > 0:
-                        # Opcional: Podrías querer cambiar el estado de la OV a 'Sin Stock' o similar
-                        # Aquí obtenemos los IDs de las OVs afectadas solo para informar
-                        ovs_afectadas = set(reservas_activas.values_list('id_orden_venta_producto__id_orden_venta_id', flat=True))
-                        
-                        # Borramos las reservas para que no se despachen
-                        reservas_activas.delete()
-                        
-                        mensaje_reservas = f" ⚠️ Se eliminaron {cantidad_reservas} reservas de stock asociadas a las OVs: {list(ovs_afectadas)} por entrar en Cuarentena."
-                        print(mensaje_reservas)
+                    if cantidad_reservas_pt > 0:
+                        ovs_afectadas = set(reservas_activas_pt.values_list('id_orden_venta_producto__id_orden_venta_id', flat=True))
+                        reservas_activas_pt.delete()
+                        mensaje_reservas_pt = f" ⚠️ Se eliminaron {cantidad_reservas_pt} reservas de PT (OVs: {list(ovs_afectadas)})."
+                        print(mensaje_reservas_pt)
+
+                    # --- B. Limpieza de Reservas de MATERIA PRIMA (OP) ---
+                    # 🆕 ESTO ES LO QUE PEDISTE AGREGAR
+                    if op_asociada:
+                        # Asegúrate de importar ReservaMateriaPrima
+                        reservas_activas_mp = ReservaMateriaPrima.objects.filter(
+                            id_orden_produccion=op_asociada
+                            # Si deseas filtrar solo las activas, descomenta la linea de abajo:
+                            # , id_estado_reserva_materia__descripcion="Activa" 
+                        )
+                        cantidad_reservas_mp = reservas_activas_mp.count()
+
+                        if cantidad_reservas_mp > 0:
+                            reservas_activas_mp.delete()
+                            mensaje_reservas_mp = f" ☢️ Se eliminaron {cantidad_reservas_mp} reservas de Materia Prima de la OP #{op_asociada.pk}."
+                            print(mensaje_reservas_mp)
 
                 # ===================================================================
-                # FIN BLOQUE NUEVO
+                # FIN BLOQUE LIMPIEZA
                 # ===================================================================
 
-                # 3. Sincronización con Orden de Producción (Tu lógica original)
-                op_asociada = OrdenProduccion.objects.filter(id_lote_produccion=lote).first()
-
+                # 3. Sincronización con Orden de Producción (Cambio de Estado)
                 if op_asociada:
                     try:
                         estado_equivalente_op = EstadoOrdenProduccion.objects.get(
@@ -157,7 +172,8 @@ class LoteProduccionViewSet(viewsets.ModelViewSet):
             return Response({
                 "mensaje": "Estado del lote actualizado correctamente.",
                 "detalle_op": mensaje_extra,
-                "detalle_reservas": mensaje_reservas, # Devolvemos info de qué pasó con las reservas
+                "limpieza_pt": mensaje_reservas_pt,
+                "limpieza_mp": mensaje_reservas_mp,
                 "nuevo_estado": nuevo_estado_lote.descripcion,
                 "id_lote": lote.id_lote_produccion
             }, status=status.HTTP_200_OK)
@@ -217,11 +233,6 @@ class LoteMateriaPrimaViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='cambiar-estado')
     def cambiar_estado(self, request, pk=None):
-        """
-        Cambia el estado de un lote de MP.
-        Si se encuentra un estado equivalente en Producción, busca las Órdenes de Producción
-        donde se reservó esta materia prima y actualiza los Lotes de Producción resultantes.
-        """
         id_nuevo_estado = request.data.get('id_estado_lote_materia_prima')
         
         if not id_nuevo_estado:
@@ -237,35 +248,35 @@ class LoteMateriaPrimaViewSet(viewsets.ModelViewSet):
                 lote_mp.id_estado_lote_materia_prima = nuevo_estado_mp
                 lote_mp.save()
                 
-                # 2. Buscar estado equivalente para Productos
+                # 2. Propagar a Producción
                 try:
                     estado_equivalente_prod = EstadoLoteProduccion.objects.get(
                         descripcion__iexact=nuevo_estado_mp.descripcion
                     )
                     
-                    # Buscar lotes afectados
+                    # Buscamos en qué OPs se está usando este lote de MP
                     reservas = ReservaMateriaPrima.objects.filter(id_lote_materia_prima=lote_mp).select_related('id_orden_produccion__id_lote_produccion')
                     
                     ids_lotes_prod = set()
                     for r in reservas:
+                        # Solo nos interesan OPs que ya generaron un Lote de Producto
                         if r.id_orden_produccion.id_lote_produccion:
                             ids_lotes_prod.add(r.id_orden_produccion.id_lote_produccion.pk)
                     
+                    # Obtenemos los objetos LoteProduccion
                     lotes_afectados = LoteProduccion.objects.filter(pk__in=ids_lotes_prod)
                     
-                    # --- AQUÍ ESTÁ EL CAMBIO CLAVE ---
+                    # Iteramos y aplicamos la función auxiliar (que ahora borra reservas de MP también)
                     for lote_prod in lotes_afectados:
                         if lote_prod.id_estado_lote_produccion != estado_equivalente_prod:
-                            # LLAMAMOS AL SERVICIO para que ejecute la limpieza
                             msgs = actualizar_estado_lote_producto(lote_prod, estado_equivalente_prod)
                             mensajes_log.extend(msgs)
-                    # ---------------------------------
 
                     if lotes_afectados.exists():
                         mensajes_log.append(f"Se propagó el estado a {lotes_afectados.count()} lotes de producto terminados.")
 
                 except EstadoLoteProduccion.DoesNotExist:
-                    mensajes_log.append("No existe estado equivalente en Productos.")
+                    mensajes_log.append("No existe estado equivalente en Productos (no se propagó).")
 
             return Response({
                 "mensaje": "Estado actualizado y propagado.",
@@ -275,7 +286,6 @@ class LoteMateriaPrimaViewSet(viewsets.ModelViewSet):
             
         except Exception as e:
              return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 
 

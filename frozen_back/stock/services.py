@@ -1,7 +1,7 @@
 from django.db import models, transaction
 from django.core.mail import send_mail
 from productos.models import Producto
-from .models import LoteProduccion, EstadoLoteProduccion, LoteMateriaPrima, EstadoLoteMateriaPrima, ReservaMateriaPrima, EstadoReservaMateria
+from .models import LoteProduccion, EstadoLoteProduccion, LoteMateriaPrima, EstadoLoteMateriaPrima, ReservaMateriaPrima, EstadoReservaMateria, ReservaStock
 from materias_primas.models import MateriaPrima
 from django.db.models import Sum, F, Q
 from django.db.models.functions import Coalesce
@@ -279,7 +279,9 @@ def actualizar_estado_lote_producto(lote_produccion, nuevo_estado):
     """
     Servicio centralizado para cambiar estado de un Lote de Producto.
     1. Actualiza el lote.
-    2. Si es Cuarentena, borra reservas de ventas.
+    2. Si es Cuarentena:
+       - Borra reservas de ventas (Producto Terminado).
+       - Borra reservas de Materia Prima de la OP asociada.
     3. Sincroniza la Orden de Producción asociada.
     """
     mensajes = []
@@ -288,31 +290,54 @@ def actualizar_estado_lote_producto(lote_produccion, nuevo_estado):
     lote_produccion.id_estado_lote_produccion = nuevo_estado
     lote_produccion.save()
 
-    # 2. Lógica de CUARENTENA (Limpieza de Reservas)
+    # Buscamos la OP asociada (la necesitamos para limpiar MP y para cambiar su estado)
+    op_asociada = OrdenProduccion.objects.filter(id_lote_produccion=lote_produccion).first()
+
+    # ===================================================================
+    # 🛡️ Lógica de CUARENTENA (Limpieza Profunda)
+    # ===================================================================
     if nuevo_estado.descripcion.lower() == "cuarentena":
-        reservas_activas = ReservaStock.objects.filter(
+        
+        # A. Limpiar Reservas de VENTAS (Producto Terminado)
+        reservas_activas_pt = ReservaStock.objects.filter(
             id_lote_produccion=lote_produccion,
             id_estado_reserva__descripcion="Activa"
         )
-        cantidad = reservas_activas.count()
+        cantidad_pt = reservas_activas_pt.count()
         
-        if cantidad > 0:
-            ovs_ids = list(reservas_activas.values_list('id_orden_venta_producto__id_orden_venta_id', flat=True))
-            reservas_activas.delete()
-            msg = f"⚠️ Lote {lote_produccion.pk} a Cuarentena: Se borraron {cantidad} reservas (OVs: {ovs_ids})."
-            mensajes.append(msg)
-            print(msg)
+        if cantidad_pt > 0:
+            ovs_ids = list(reservas_activas_pt.values_list('id_orden_venta_producto__id_orden_venta_id', flat=True))
+            reservas_activas_pt.delete()
+            msg_pt = f"⚠️ Lote Prod {lote_produccion.pk} a Cuarentena: Se borraron {cantidad_pt} reservas de Venta (OVs: {ovs_ids})."
+            mensajes.append(msg_pt)
+            print(msg_pt)
 
-    # 3. Sincronizar OP (Trazabilidad hacia atrás)
-    op_asociada = OrdenProduccion.objects.filter(id_lote_produccion=lote_produccion).first()
+        # B. Limpiar Reservas de MATERIA PRIMA (Orden de Producción) - NUEVO
+        if op_asociada:
+            reservas_activas_mp = ReservaMateriaPrima.objects.filter(
+                id_orden_produccion=op_asociada
+                # id_estado_reserva_materia__descripcion="Activa" # Descomentar si usas estados en reservas MP
+            )
+            cantidad_mp = reservas_activas_mp.count()
+
+            if cantidad_mp > 0:
+                reservas_activas_mp.delete()
+                msg_mp = f"☢️ OP #{op_asociada.pk} a Cuarentena: Se liberaron {cantidad_mp} reservas de Materia Prima."
+                mensajes.append(msg_mp)
+                print(msg_mp)
+
+    # ===================================================================
+
+    # 3. Sincronizar Estado de la OP
     if op_asociada:
         try:
             estado_equiv_op = EstadoOrdenProduccion.objects.get(descripcion__iexact=nuevo_estado.descripcion)
+            
             if op_asociada.id_estado_orden_produccion != estado_equiv_op:
                 op_asociada.id_estado_orden_produccion = estado_equiv_op
                 op_asociada.save()
-                mensajes.append(f"OP #{op_asociada.pk} actualizada a '{estado_equiv_op.descripcion}'.")
+                mensajes.append(f"OP #{op_asociada.pk} cambiada a estado '{estado_equiv_op.descripcion}'.")
         except EstadoOrdenProduccion.DoesNotExist:
-            pass # No hay estado equivalente, no pasa nada
+            pass 
 
     return mensajes
