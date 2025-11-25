@@ -4,6 +4,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
+from rest_framework.views import APIView
+from rest_framework.response import Response
 
 
 # Asegúrate de que estas importaciones apunten a los servicios que corregimos
@@ -14,6 +16,7 @@ from stock.models import ReservaStock, LoteProduccion, LoteProduccionMateria
 from ventas.models import OrdenVenta, OrdenVentaProducto
 from ventas.serializers import OrdenVentaSerializer
 from trazabilidad.models import Configuracion
+from stock.services import _enviar_telegram_async
 
 # Asumo que esta clase está en views.py de tu app de trazabilidad
 class TrazabilidadViewSet(viewsets.ViewSet):
@@ -38,7 +41,7 @@ class TrazabilidadViewSet(viewsets.ViewSet):
         try:
             report = get_traceability_for_order(int(pk))
         except ValueError:
-             return Response(
+            return Response(
                 {"error": "ID de Orden de Venta no válido."},
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -398,3 +401,62 @@ def get_config(clave: str, default_val: int) -> int:
     
 
 
+
+
+
+# from tu_app.utils import _enviar_telegram_async 
+
+class NotificarRiesgoLoteView(APIView):
+    def post(self, request):
+        # 1. Recibimos los datos del Body
+        ids_ordenes = request.data.get('ids_ordenes', [])
+        nombre_producto = request.data.get('nombre_producto') # <--- Dato que viene del front
+
+        # 2. Validaciones
+        if not ids_ordenes or not isinstance(ids_ordenes, list):
+            return Response(
+                {"error": "Se requiere una lista de IDs en 'ids_ordenes'"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not nombre_producto:
+            return Response(
+                {"error": "Se requiere el campo 'nombre_producto'"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 3. Buscar solo las órdenes y clientes (Consulta optimizada y simple)
+        ordenes = OrdenVenta.objects.filter(pk__in=ids_ordenes).select_related('id_cliente')
+
+        enviados = 0
+        no_encontrados = len(ids_ordenes) - ordenes.count()
+
+        for orden in ordenes:
+            if not orden.id_cliente:
+                continue
+
+            # Formateamos nombre del cliente
+            nombre_cliente = f"{orden.id_cliente.nombre} {orden.id_cliente.apellido}".strip()
+
+            # 4. Construimos el mensaje usando el nombre_producto que nos enviaste
+            mensaje = (
+                f"🚨 *AVISO DE PREVENCIÓN - Orden #{orden.pk}*\n\n"
+                f"Hola {nombre_cliente}, ¿cómo estás?\n\n"
+                f"Te contacto porque detectamos que uno de los lotes de: *{nombre_producto}* "
+                "que adquiriste podría estar en mal estado. "
+                "Queremos ser transparentes: existe riesgo de que el tuyo sea parte de ese lote.\n\n"
+                "Por prevención, te pedimos que no lo uses hasta revisarlo. Nos estaremos comunicando cuanto antes.\n\n"
+                "Disculpas por el inconveniente — estamos revisando el origen para que no vuelva a ocurrir."
+            )
+
+            try:
+                _enviar_telegram_async(mensaje)
+                enviados += 1
+            except Exception as e:
+                print(f"Error enviando alerta a orden {orden.pk}: {e}")
+
+        return Response({
+            "mensaje": "Proceso finalizado",
+            "alertas_enviadas": enviados,
+            "ordenes_no_encontradas": no_encontrados
+        }, status=status.HTTP_200_OK)
